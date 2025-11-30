@@ -1,4 +1,22 @@
-# Anora: Zero-Knowledge Mental Wellness App - Architecture & Journey Maps
+# Anora: Zero-Knowledge Mental Wellness App
+
+## High-level Overview
+Anora is a privacy-first mental wellness journaling application that leverages on-device AI to provide clinical-grade insights without compromising user data. By processing all sensitive text locally and using federated learning for model improvement, Anora bridges the gap between personal self-reflection and professional clinical care, offering DSM-5 aligned indicators while ensuring zero-knowledge privacy.
+
+### Key Features
+*   **Secure Journaling:** AES-256 encrypted local storage for all entries.
+*   **On-Device AI:** Real-time emotional analysis and risk detection using quantized MentalBERT.
+*   **Federated Learning:** Privacy-preserving model updates without sharing raw data.
+*   **Clinician "Locked Box":** Cryptographically secure reporting mechanism for sharing insights with therapists.
+*   **Zero-Knowledge Architecture:** No raw text ever leaves the user's device.
+
+## Architecture & Tech Stack
+Anora follows a "Local-First" architecture. The mobile app handles all data ingestion, storage, and inference. The backend acts as a "Blind Mailman" for encrypted reports and a coordinator for Secure Aggregation (SecAgg) of model gradients.
+
+*   **Mobile:** Flutter (UI), TFLite (Inference), Hive/SQLite (Storage), flutter_secure_storage (Key management).
+*   **Backend:** Python/FastAPI (Coordinator), PostgreSQL (Metadata), Redis (Message Queue).
+*   **AI/ML:** MentalBERT (Base Model), TensorFlow Federated (TFF), TFLite (Quantization).
+*   **Design Principles:** Zero-Knowledge, Least Privilege, Local-First, No Telemetry by Default.
 
 ## 1. User Journey Maps
 
@@ -219,3 +237,115 @@ This flow ensures the AI improves without centralizing user data.
 | **Green** | ML/Derived | Mathematical representations, scores, or vectors. | Can leave device only if Masked (for FL) or Encrypted (for Doctor). |
 | **Blue** | Encrypted | Data wrapped in AES/RSA encryption. | Can be stored on Server (Blind Mailman) or transmitted freely. |
 | **Yellow** | Security | Keys, Guards, and Policy layers. | Keys generated on-device never leave the device. |
+
+## 5. Getting Started (Dev Setup)
+
+### Prerequisites
+*   Flutter SDK (v3.x+)
+*   Dart SDK
+*   Android Studio / Xcode
+*   Python 3.9+ (for ML tools)
+*   Docker (optional, for backend)
+
+### Installation
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/aaryxnblondead/anora.git
+    cd anora
+    ```
+2.  **Setup Environment:**
+    Copy `.env.example` to `.env` and configure keys (see Configuration section).
+3.  **Install Dependencies:**
+    ```bash
+    flutter pub get
+    ```
+4.  **Run the App:**
+    ```bash
+    flutter run
+    ```
+
+### Backend Setup (Blind Mailman)
+To run the local server for testing encrypted report delivery:
+```bash
+cd backend
+docker-compose up -d
+# Or manually: uvicorn main:app --reload
+```
+
+## 6. Configuration & Environment
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `API_BASE_URL` | URL for the Blind Mailman backend | `http://localhost:8000` |
+| `OPENAI_API_KEY` | (Legacy/Dev) Placeholder for initial prototyping | `sk-...` |
+| `FL_SERVER_URL` | Endpoint for Federated Learning coordinator | `http://localhost:8080` |
+| `ENABLE_TELEMETRY` | Opt-in crash reporting | `false` |
+
+**Build Flavors:**
+*   **Dev:** Uses mock AI responses and local backend.
+*   **Staging:** Connects to testnet backend, uses unoptimized TFLite model.
+*   **Prod:** Full optimization, real Secure Enclave keys, production backend.
+
+## 7. AI / ML Details
+*   **Model:** Quantized MentalBERT (INT8) fine-tuned on mental health datasets.
+*   **Predictions:** 7 basic emotions, 4 risk flags (Self-harm, Anxiety, Depression, Mania), and thematic tags.
+*   **Location:** `assets/models/mentalbert_quant.tflite`
+*   **Constraints:** Optimized for <50MB size and <200ms inference latency on mid-range devices.
+*   **Privacy Note:** **No raw journal text is ever sent to servers.** Only encrypted JSON reports (user-initiated) and masked gradients (system-initiated) leave the device.
+
+## 8. Security & Privacy
+### Threat Model
+*   **Defends against:** Curious server admins, network eavesdroppers (MITM), mass surveillance, database leaks.
+*   **Does not defend against:** Rooted devices with screen readers, physical device theft (if unlocked), "shoulder surfing".
+
+### Cryptography
+*   **Data at Rest:** AES-256-GCM (SQLCipher/Realm Encryption).
+*   **Key Exchange:** RSA-2048 for Doctor/Patient handshake.
+*   **Key Storage:** iOS Secure Enclave / Android Keystore.
+
+### Federated Learning Privacy
+Uses **Secure Aggregation (SecAgg)**. The server only sees the sum of updates from thousands of users. It cannot mathematically derive an individual user's contribution (gradient) from the aggregate, ensuring model training does not leak training data.
+
+## 9. Clinical / Ethical Disclaimers
+*   **Non-Diagnostic:** This app is for symptom tracking and self-reflection. It is **not** a diagnostic tool or a replacement for professional care.
+*   **Emergency:** In case of crisis or emergency, please contact local emergency services or a suicide prevention helpline immediately.
+*   **Collaboration:** Clinical logic and risk mappings are reviewed by licensed psychiatrists to ensure safety and relevance.
+
+## 10. Project Structure
+```
+lib/
+├── features/       # Core functionality (journaling, insights, auth)
+├── core/           # Shared utilities, theme, storage services
+├── data/           # Repositories and data sources
+├── domain/         # Entities and Use Cases (Clean Arch)
+└── presentation/   # Widgets and Screens
+backend/            # Python FastAPI server for Blind Mailman
+models/             # TFLite model files and training scripts
+docs/               # Architecture diagrams and research papers
+```
+
+## 11. How to Contribute
+*   **Guidelines:** Follow the "Effective Dart" style guide. Open an issue before starting major features.
+*   **Branching:** Use `feature/feature-name` for new work. PRs require 1 approval.
+*   **Testing:**
+    *   Unit Tests: `flutter test`
+    *   Integration Tests: `flutter test integration_test`
+
+## 12. Roadmap & Open Questions
+*   [ ] Replace OpenAI stub with fully functional on-device TFLite pipeline.
+*   [ ] Implement Federated Learning client (TFF for Mobile).
+*   [ ] Build Clinician Portal (Web) with client-side decryption.
+*   [ ] **Limitation:** Current risk detection is heuristic-based and not clinically validated.
+
+## 13. Licensing & Citation
+*   **License:** MIT License.
+*   **Model License:** MentalBERT is available under HuggingFace permissions (cite original authors).
+*   **Citation:**
+    ```bibtex
+    @software{anora_2025,
+      author = {Anora Team},
+      title = {Anora: Zero-Knowledge Mental Wellness App},
+      year = {2025},
+      url = {https://github.com/aaryxnblondead/anora}
+    }
+    ```
