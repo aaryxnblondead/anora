@@ -14,14 +14,14 @@ flowchart LR
     classDef infra fill:#f5f5f5,stroke:#666,stroke-width:1px,color:#000
 
     %% Swimlanes
-    subgraph UserDevice [User Device (Mobile App)]
+    subgraph UserDevice ["User Device (Mobile App)"]
         direction TB
         
         %% Nodes
         UserEntry([User types journal entry])
         PreProc[Local Pre-processing<br/>Tokenization, Filters]
         
-        subgraph Inference [Local AI Engine]
+        subgraph Inference ["Local AI Engine"]
             ModelInf[On-device AI Inference<br/>Quantized MentalBERT + Adapter]
         end
         
@@ -47,21 +47,21 @@ flowchart LR
         PrivacyGuard{Privacy Guard Layer<br/>Blocks Raw Text}
     end
 
-    subgraph Cloud [Cloud Backend]
+    subgraph Cloud ["Cloud Backend"]
         Mailman[Blind Mailman API<br/>Opaque Blob Storage]
         SecAggService[Secure Aggregation Service<br/>Combines Masks]
         AggModel[Aggregate Updates<br/>Global Average]
         ModelDist[Model Distribution Service]
     end
 
-    subgraph Doctor [Doctor Device]
+    subgraph Doctor ["Doctor Device"]
         DocDownload[Download Locked Box]
         DecryptK[Decrypt AES Key<br/>Uses Dr Private RSA Key]
         DecryptJ[Decrypt JSON Payload]
         Dashboard[Render Clinical Dashboard<br/>Timeline & Risk Flags]
     end
 
-    subgraph Infra [Model Training Infra]
+    subgraph Infra ["Model Training Infra"]
         UpdateGlobal[Update Global Base Model]
     end
 
