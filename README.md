@@ -1,6 +1,68 @@
-# Anora: Zero-Knowledge Mental Wellness App - Data Journey Map
+# Anora: Zero-Knowledge Mental Wellness App - Architecture & Journey Maps
 
-## 1. Data Journey Diagram
+## 1. User Journey Maps
+
+This section outlines the parallel journeys of the Patient (Journaler) and the Clinician, highlighting key interactions, emotions, and privacy touchpoints.
+
+```mermaid
+flowchart TB
+    %% Swimlanes
+    subgraph Patient ["Journaler / OPD Patient Journey"]
+        direction TB
+        P1(Awareness & Onboarding) --> P2(Daily Journaling & Reflection)
+        P2 --> P3(Insight & Self-Management)
+        P3 --> P4(Sharing With Clinician)
+        P4 --> P5(Follow-Up & Long-Term Use)
+    end
+
+    subgraph Clinician ["Clinician / Psychiatrist Journey"]
+        direction TB
+        C1(Adoption & Setup) --> C2(Receiving Data From Patient)
+        C2 --> C3(Session Preparation)
+        C3 --> C4(In-Session Use)
+        C4 --> C5(Documentation & Ongoing Monitoring)
+    end
+
+    %% Interactions
+    P4 -.->|"Encrypted 'Locked Box'"| C2
+    C4 -.->|"Joint Review"| P5
+
+    %% Styling
+    classDef patient fill:#e6f2ff,stroke:#0066cc,color:black
+    classDef clinician fill:#e6ffe6,stroke:#009933,color:black
+    classDef shared fill:#f3e6ff,stroke:#6600cc,stroke-dasharray: 5 5,color:black
+
+    class P1,P2,P3,P4,P5 patient
+    class C1,C2,C3,C4,C5 clinician
+```
+
+### Detailed Journey Breakdown
+
+#### Persona 1: Journaler / OPD Patient
+
+| Stage | Actions | Touchpoints | Emotions | Opportunities |
+| :--- | :--- | :--- | :--- | :--- |
+| **Awareness & Onboarding** | Discovers Anora, reads about privacy, installs app, completes onboarding. | App store, Privacy explainer, Onboarding flow. | Skeptical → Reassured → Hopeful | Clearer reassurance about 'no cloud data', simple AI explanation. |
+| **Daily Journaling & Reflection** | Writes entries, uses prompts, checks mood summaries. | Editor screen, Mood chips, Analysis card. | Relief, Curiosity, Anxiety (if negative trends) | Gentle language around "risk", positive reinforcement. |
+| **Insight & Self-Management** | Views trends, reads pattern explanations, explores coping resources. | Insights dashboard, Streaks, Resource links. | Understood, Confronted | Simplify visualizations, "tiny wins" feedback, crisis resources. |
+| **Sharing With Clinician** | Opts to share summary, selects time range, previews summary. | "Share with clinician" flow, Encryption progress. | Cautious → Trusting → Empowered | Show exactly what is being shared; reassure raw text stays local. |
+| **Follow-Up & Long-Term Use** | Updates journals, tracks changes, pauses usage. | Long-term trend view, Reminders. | Stable, In control, Disengaged | Non-guilting re-engagement nudges, graduation ritual. |
+
+#### Persona 2: Clinician / Psychiatrist
+
+| Stage | Actions | Touchpoints | Emotions | Opportunities |
+| :--- | :--- | :--- | :--- | :--- |
+| **Adoption & Setup** | Signs up, verifies identity, generates keypair. | Clinician onboarding, Keypair setup. | Cautious, Curious, Time-poor | Short setup, clear legal/privacy framing, sample reports. |
+| **Receiving Data** | Receives notification, downloads locked box, decrypts summary. | Patient list, New-report badge, Report viewer. | Interested, Skeptical, Impressed | One-click "review before session", flag key changes. |
+| **Session Preparation** | Reviews timeline, risk flags, sleep/anxiety indicators. | Per-patient timeline, Risk highlights. | Better prepared, Less blind-spotted | Add clinician notes/hypotheses, quick filters. |
+| **In-Session Use** | Refers to summary, checks indicators, reviews trends with patient. | Tablet/Laptop view, Shared screen. | Collaborative, Cautious | Tools to mark "clinically relevant" events, override misclassifications. |
+| **Documentation** | Writes notes, sets alert thresholds, decides on future reports. | Alert settings, EHR integration, Export summary. | Supported, Concerned (liability) | Configurable alerts, audit trail, clear 'AI is assistive' messaging. |
+
+> **Note:**
+> *   All raw text stays on the patient device – clinicians see only derived scores/summaries.
+> *   AI is assistive, not diagnostic.
+
+## 2. Data Journey Diagram
 
 This diagram illustrates the lifecycle of user data, focusing on on-device processing, end-to-end encryption, and privacy-preserving federated learning.
 
@@ -109,7 +171,7 @@ flowchart LR
     class KeyMgmt,PrivacyGuard,GenAES,DecryptK sec
 ```
 
-## 2. Diagram Analysis & Flow Descriptions
+## 3. Diagram Analysis & Flow Descriptions
 
 ### A. User Device Lane (The Trust Boundary)
 
@@ -149,7 +211,7 @@ This flow ensures the AI improves without centralizing user data.
 *   **Secure Aggregation (SecAgg+):** Before sending, the gradients are masked using a cryptographic protocol where the server adds up inputs from 1,000 users. The masks mathematically cancel each other out only when summed, revealing the global average but hiding individual contributions.
 *   **Global Update:** The server updates the base model and distributes version v2.0 back to all phones.
 
-## 3. Data Classification Legend
+## 4. Data Classification Legend
 
 | Border Color | Classification | Definition | Flow Constraints |
 | :--- | :--- | :--- | :--- |
