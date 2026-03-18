@@ -219,6 +219,23 @@ class _HomeContent extends StatelessWidget {
             label: const Text('Go to Journal'),
           ),
         ),
+        const SizedBox(height: 10),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: () {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text(
+                    'If you are in immediate danger, please call your local emergency number.',
+                  ),
+                ),
+              );
+            },
+            icon: const Icon(Icons.emergency_rounded),
+            label: const Text('I need immediate help / emergency'),
+          ),
+        ),
       ],
     );
   }
