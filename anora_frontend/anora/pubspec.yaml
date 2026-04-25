@@ -43,7 +43,7 @@ dependencies:
   local_auth: ^2.2.0
   pointycastle: ^3.7.4
   asn1lib: ^1.5.8
-  tflite_flutter: ^0.10.4
+  tflite_flutter: ^0.11.0
 
 dev_dependencies:
   flutter_test:
