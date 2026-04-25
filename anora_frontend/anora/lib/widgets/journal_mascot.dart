@@ -190,11 +190,9 @@ class _JournalMascotState extends State<JournalMascot>
   MascotMood _prevMood = MascotMood.idle;
   MascotMood _currentMood = MascotMood.idle;
   bool _isBlinking = false;
-  bool _isTapped = false;
   final _rng = math.Random();
 
   final List<_Particle> _particles = [];
-  double _particleTime = 0;
 
   @override
   void initState() {
@@ -238,11 +236,6 @@ class _JournalMascotState extends State<JournalMascot>
         weight: 35,
       ),
     ]).animate(_bounceCtrl);
-    _bounceCtrl.addStatusListener((s) {
-      if (s == AnimationStatus.completed) {
-        setState(() => _isTapped = false);
-      }
-    });
 
     // Mood morph
     _moodCtrl = AnimationController(
@@ -285,7 +278,6 @@ class _JournalMascotState extends State<JournalMascot>
   // ── Particle tick ─────────────────────────────────────────────────────────
   void _tickParticles() {
     if (!mounted) return;
-    _particleTime += 0.016;
     final cfg = kMoodConfigs[_currentMood]!;
 
     // Spawn
@@ -385,7 +377,6 @@ class _JournalMascotState extends State<JournalMascot>
       onTap: () {
         widget.onTap?.call();
         _bounceCtrl.forward(from: 0);
-        setState(() => _isTapped = true);
       },
       child: AnimatedBuilder(
         animation: Listenable.merge([

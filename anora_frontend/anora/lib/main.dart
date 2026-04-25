@@ -5,12 +5,16 @@ import 'screens/home_screen.dart';
 import 'screens/insights_screen.dart';
 import 'screens/journal_screen.dart';
 import 'screens/settings_screen.dart';
+import 'services/ai_inference_service.dart';
 import 'services/storage_service.dart';
+import 'services/tokenizer_service.dart';
 import 'widgets/app_lock_gate.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await StorageService.instance.init();
+  await TokenizerService.instance.init();
+  await AiInferenceService.instance.init();
   runApp(const ProviderScope(child: AnoraApp()));
 }
 

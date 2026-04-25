@@ -26,6 +26,7 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
   final ScrollController _scrollController = ScrollController();
   final GlobalKey _textFieldKey = GlobalKey();
   bool _isSaving = false;
+  String? _lastDominantEmotion;
 
   @override
   void dispose() {
@@ -59,32 +60,52 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
 
     setState(() => _isSaving = true);
 
-    final moodScore = ref.read(_moodScoreProvider);
-    final moodPath = ref.read(_moodPathProvider);
-    final settings = ref.read(settingsControllerProvider);
-    final aiResult = await AiInferenceService.instance.mockAnalyze(text);
-    final entry = JournalEntry(
-      id: DateTime.now().microsecondsSinceEpoch.toString(),
-      text: text,
-      timestamp: DateTime.now(),
-      moodScore: moodScore,
-      moodPath: moodPath,
-      riskFlags: aiResult.riskFlags,
-    );
-
-    await StorageService.instance.journalBox.add(entry);
-    if (settings.hapticsEnabled) {
-      await HapticFeedback.mediumImpact();
-    }
-
-    _controller.clear();
-    _focusNode.unfocus();
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Saved to your secure vault.')),
+    try {
+      final moodScore = ref.read(_moodScoreProvider);
+      final moodPath = ref.read(_moodPathProvider);
+      final settings = ref.read(settingsControllerProvider);
+      final aiResult = await AiInferenceService.instance.analyze(text);
+      final blendedMoodScore = (
+        (moodScore * 0.6) + (aiResult.sentimentScore * 0.4)
+      ).clamp(0.0, 1.0);
+      final entry = JournalEntry(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        text: text,
+        timestamp: DateTime.now(),
+        moodScore: blendedMoodScore,
+        moodPath: moodPath,
+        riskFlags: aiResult.riskFlags,
       );
-      setState(() => _isSaving = false);
+
+      await StorageService.instance.journalBox.add(entry);
+      if (settings.hapticsEnabled) {
+        await HapticFeedback.mediumImpact();
+      }
+
+      if (mounted) {
+        setState(() {
+          _lastDominantEmotion = moodPath.length <= 1 ? aiResult.dominantEmotion : null;
+        });
+      }
+
+      _controller.clear();
+      _focusNode.unfocus();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Saved to your secure vault.')),
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not analyze entry: $error')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSaving = false);
+      }
     }
   }
 
@@ -113,6 +134,7 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
                   ref.read(_moodPathProvider.notifier).state = path;
                   ref.read(_moodScoreProvider.notifier).state =
                       FeelingsWheelData.moodScoreForPath(path);
+                  setState(() => _lastDominantEmotion = null);
                   if (settings.hapticsEnabled) {
                     HapticFeedback.selectionClick();
                   }
@@ -133,6 +155,13 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
               if (shouldPrompt) const SizedBox(height: 12),
+              if (shouldPrompt && _lastDominantEmotion != null && moodPath.length <= 1) ...[
+                Chip(
+                  avatar: const Icon(Icons.auto_awesome, size: 16),
+                  label: Text('Model suggests $_lastDominantEmotion'),
+                ),
+                const SizedBox(height: 12),
+              ],
               TextField(
                 key: _textFieldKey,
                 controller: _controller,

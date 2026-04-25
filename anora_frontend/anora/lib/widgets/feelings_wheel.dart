@@ -228,7 +228,6 @@ class _FeelingsWheelState extends State<FeelingsWheel>
   String? _selectedCoreId;
   String? _selectedSecondId;
   String? _selectedThirdId;
-  bool _saved = false;
 
   @override
   void initState() {
@@ -255,11 +254,6 @@ class _FeelingsWheelState extends State<FeelingsWheel>
   @override
   Widget build(BuildContext context) {
     final breadcrumbs = _buildBreadcrumbs();
-    final currentFeeling = _currentFeeling();
-    final prompt = currentFeeling != null
-        ? FeelingsWheelData.journalPrompts[currentFeeling.id]
-        : null;
-
     return LayoutBuilder(
       builder: (context, constraints) {
         final maxWidth = min(constraints.maxWidth, _wheelSize);
@@ -294,15 +288,6 @@ class _FeelingsWheelState extends State<FeelingsWheel>
                 ),
               ),
             ),
-            if (_selectedThirdId != null) ...[
-              const SizedBox(height: 18),
-              _buildFeelingCard(
-                context,
-                breadcrumbs,
-                prompt,
-                currentFeeling,
-              ),
-            ],
             if (_selectedCoreId != null) ...[
               const SizedBox(height: 14),
               OutlinedButton(
@@ -400,124 +385,11 @@ class _FeelingsWheelState extends State<FeelingsWheel>
     );
   }
 
-  Widget _buildFeelingCard(
-    BuildContext context,
-    List<_Crumb> crumbs,
-    String? prompt,
-    FeelingNode? current,
-  ) {
-    final accent = current?.colors.first ?? const Color(0xFF4A4540);
-
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 240),
-      padding: const EdgeInsets.all(22),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x12000000),
-            blurRadius: 32,
-            offset: Offset(0, 8),
-          ),
-          BoxShadow(
-            color: Color(0x0A000000),
-            blurRadius: 8,
-            offset: Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          Text(
-            'Right now I feel',
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: const Color(0xFFC5BDB5),
-                  letterSpacing: 1,
-                ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            crumbs.isNotEmpty ? crumbs.last.label : '',
-            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            crumbs.length > 1
-                ? crumbs.sublist(0, crumbs.length - 1).map((c) => c.label).join(' › ')
-                : '',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: const Color(0xFFC0B8B0),
-                ),
-          ),
-          const SizedBox(height: 12),
-          if (prompt != null)
-            Text(
-              prompt,
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: const Color(0xFF8A8078),
-                    height: 1.5,
-                  ),
-            ),
-          const SizedBox(height: 10),
-          TextField(
-            maxLines: 3,
-            decoration: InputDecoration(
-              hintText: 'Write a few words…',
-              hintStyle: const TextStyle(color: Color(0xFFC5BDB5)),
-              filled: true,
-              fillColor: const Color(0xFFFDF9F7),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(color: Color(0xFFE8E2DA)),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(color: Color(0xFFE8E2DA), width: 1.5),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(color: Color(0xFFB5ACA0)),
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: () => setState(() => _saved = true),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _saved ? const Color(0xFF5CB878) : accent,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                elevation: 0,
-              ),
-              child: Text(
-                _saved ? '✓  Saved to Journal' : 'Save to Journal',
-                style: const TextStyle(
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.3,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   void _reset() {
     setState(() {
       _selectedCoreId = null;
       _selectedSecondId = null;
       _selectedThirdId = null;
-      _saved = false;
     });
   }
 
@@ -594,7 +466,6 @@ class _FeelingsWheelState extends State<FeelingsWheel>
 
   void _selectSegment(_Segment segment) {
     setState(() {
-      _saved = false;
       if (segment.type == _SegmentType.core) {
         if (_selectedCoreId == segment.id) {
           _selectedCoreId = null;
@@ -656,42 +527,44 @@ class _FeelingsWheelState extends State<FeelingsWheel>
 
       if (selectedCoreId != null && selectedCoreId == feeling.id) {
         for (var i = 0; i < feeling.children.length; i++) {
-        final branch = feeling.children[i];
-        final secondStart = angle + i * dpS;
-        final secondEnd = secondStart + dpS;
-        final secondId = '${feeling.id}||${branch.label}';
-        segments.add(
-          _Segment(
-            type: _SegmentType.second,
-            id: secondId,
-            label: branch.label,
-            color: feeling.colors[1],
-            coreId: feeling.id,
-            secondId: secondId,
-            startAngle: secondStart,
-            endAngle: secondEnd,
-            innerRadius: _r2,
-            outerRadius: _r3,
-          ),
-        );
-
-        for (var t = 0; t < branch.children.length; t++) {
-          final thirdStart = secondStart + (t * dpS) / branch.children.length;
-          final thirdEnd = secondStart + ((t + 1) * dpS) / branch.children.length;
+          final branch = feeling.children[i];
+          final secondStart = angle + i * dpS;
+          final secondEnd = secondStart + dpS;
+          final secondId = '${feeling.id}||${branch.label}';
           segments.add(
             _Segment(
-              type: _SegmentType.third,
-              id: '${feeling.id}||${branch.label}||${branch.children[t]}',
-              label: branch.children[t],
-              color: feeling.colors[2],
+              type: _SegmentType.second,
+              id: secondId,
+              label: branch.label,
+              color: feeling.colors[1],
               coreId: feeling.id,
               secondId: secondId,
-              startAngle: thirdStart,
-              endAngle: thirdEnd,
-              innerRadius: _r3,
-              outerRadius: _r4,
+              startAngle: secondStart,
+              endAngle: secondEnd,
+              innerRadius: _r2,
+              outerRadius: _r3,
             ),
           );
+
+          for (var t = 0; t < branch.children.length; t++) {
+            final thirdStart =
+                secondStart + (t * dpS) / branch.children.length;
+            final thirdEnd =
+                secondStart + ((t + 1) * dpS) / branch.children.length;
+            segments.add(
+              _Segment(
+                type: _SegmentType.third,
+                id: '${feeling.id}||${branch.label}||${branch.children[t]}',
+                label: branch.children[t],
+                color: feeling.colors[2],
+                coreId: feeling.id,
+                secondId: secondId,
+                startAngle: thirdStart,
+                endAngle: thirdEnd,
+                innerRadius: _r3,
+                outerRadius: _r4,
+              ),
+            );
           }
         }
       }
