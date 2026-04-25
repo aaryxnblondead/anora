@@ -1,0 +1,22 @@
+version: "3.9"
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: anora
+      POSTGRES_PASSWORD: anora
+      POSTGRES_DB: anora
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+
+  api:
+    build: .
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    ports: ["8000:8000"]
+    depends_on: [db]
+    environment:
+      DATABASE_URL: postgresql://anora:anora@db:5432/anora
+      ALLOWED_ORIGINS: http://localhost:3000
+
+volumes:
+  pgdata:

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
@@ -7,7 +8,7 @@ class TokenizerService {
 
   static final TokenizerService instance = TokenizerService._();
 
-  static const String _vocabAssetPath = 'assets/models/vocab.txt';
+  static const String _tokenizerAssetPath = 'assets/models/tokenizer.json';
   static const String _unkToken = '[UNK]';
   static const String _clsToken = '[CLS]';
   static const String _sepToken = '[SEP]';
@@ -21,15 +22,27 @@ class TokenizerService {
       return;
     }
 
-    final vocabText = await rootBundle.loadString(_vocabAssetPath);
-    final lines = vocabText
-        .split(RegExp(r'\r?\n'))
-        .map((line) => line.trim())
-        .where((line) => line.isNotEmpty)
-        .toList(growable: false);
+    final tokenizerText = await rootBundle.loadString(_tokenizerAssetPath);
+    final tokenizerJson = jsonDecode(tokenizerText);
+    if (tokenizerJson is! Map<String, dynamic>) {
+      throw StateError('Tokenizer asset is not a valid JSON object.');
+    }
 
-    for (var index = 0; index < lines.length; index++) {
-      _vocab[lines[index]] = index;
+    final model = tokenizerJson['model'];
+    if (model is! Map<String, dynamic>) {
+      throw StateError('Tokenizer JSON is missing the model section.');
+    }
+
+    final vocab = model['vocab'];
+    if (vocab is! Map<String, dynamic>) {
+      throw StateError('Tokenizer JSON model is missing the vocab map.');
+    }
+
+    for (final entry in vocab.entries) {
+      final value = entry.value;
+      if (value is int) {
+        _vocab[entry.key] = value;
+      }
     }
 
     for (final specialToken in const <String>[

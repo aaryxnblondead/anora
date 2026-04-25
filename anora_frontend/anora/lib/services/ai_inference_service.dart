@@ -9,7 +9,7 @@ class AiInferenceService {
 
   static final AiInferenceService instance = AiInferenceService._();
 
-  static const String _modelAssetPath = 'assets/models/mentalbert_quant.tflite';
+  static const String _modelAssetPath = 'assets/models/mobilebert_quant.tflite';
 
   static const List<String> _emotionLabels = <String>[
     'joy',
@@ -34,6 +34,13 @@ class AiInferenceService {
     'risk_depression',
     'risk_mania',
   ];
+
+  static const Map<String, double> _riskThresholds = <String, double>{
+    'risk_selfharm': 0.35,
+    'risk_anxiety': 0.50,
+    'risk_depression': 0.55,
+    'risk_mania': 0.60,
+  };
 
   Interpreter? _interpreter;
 
@@ -85,7 +92,8 @@ class AiInferenceService {
     final riskFlags = <String>[];
     for (var index = 0; index < _riskLabelOrder.length; index++) {
       final label = _riskLabelOrder[index];
-      if (probabilities[_emotionLabels.length + index] >= 0.5) {
+      final threshold = _riskThresholds[label] ?? 0.5;
+      if (probabilities[_emotionLabels.length + index] >= threshold) {
         riskFlags.add(_riskLabelDisplayNames[label] ?? label);
       }
     }
@@ -97,6 +105,46 @@ class AiInferenceService {
       riskFlags: List.unmodifiable(riskFlags),
       emotionScores: Map.unmodifiable(emotionScores),
       dominantEmotion: dominantEmotion,
+    );
+  }
+
+  Future<InferenceBenchmark> benchmarkLatency(
+    String text, {
+    int warmupRuns = 5,
+    int measuredRuns = 30,
+  }) async {
+    if (warmupRuns < 0 || measuredRuns <= 0) {
+      throw ArgumentError('warmupRuns must be >= 0 and measuredRuns must be > 0.');
+    }
+
+    for (var index = 0; index < warmupRuns; index++) {
+      await analyze(text);
+    }
+
+    var totalMicros = 0;
+    var minMicros = 1 << 62;
+    var maxMicros = 0;
+
+    for (var index = 0; index < measuredRuns; index++) {
+      final stopwatch = Stopwatch()..start();
+      await analyze(text);
+      stopwatch.stop();
+      final elapsed = stopwatch.elapsedMicroseconds;
+      totalMicros += elapsed;
+      if (elapsed < minMicros) {
+        minMicros = elapsed;
+      }
+      if (elapsed > maxMicros) {
+        maxMicros = elapsed;
+      }
+    }
+
+    return InferenceBenchmark(
+      warmupRuns: warmupRuns,
+      measuredRuns: measuredRuns,
+      averageMs: (totalMicros / measuredRuns) / 1000.0,
+      minMs: minMicros / 1000.0,
+      maxMs: maxMicros / 1000.0,
     );
   }
 
@@ -120,4 +168,20 @@ class AiInferenceResult {
   final List<String> riskFlags;
   final Map<String, double> emotionScores;
   final String? dominantEmotion;
+}
+
+class InferenceBenchmark {
+  const InferenceBenchmark({
+    required this.warmupRuns,
+    required this.measuredRuns,
+    required this.averageMs,
+    required this.minMs,
+    required this.maxMs,
+  });
+
+  final int warmupRuns;
+  final int measuredRuns;
+  final double averageMs;
+  final double minMs;
+  final double maxMs;
 }

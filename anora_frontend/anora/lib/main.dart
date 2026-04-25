@@ -5,6 +5,7 @@ import 'screens/home_screen.dart';
 import 'screens/insights_screen.dart';
 import 'screens/journal_screen.dart';
 import 'screens/settings_screen.dart';
+import 'onboarding/onboarding_gate.dart';
 import 'services/ai_inference_service.dart';
 import 'services/storage_service.dart';
 import 'services/tokenizer_service.dart';
@@ -27,7 +28,7 @@ class AnoraApp extends StatelessWidget {
       title: 'Anora',
       debugShowCheckedModeBanner: false,
       theme: _buildSoothingTheme(),
-      home: const AppLockGate(child: AppShell()),
+      home: const OnboardingGate(),
     );
   }
 }

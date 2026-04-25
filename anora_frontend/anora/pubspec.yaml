@@ -39,7 +39,10 @@ dependencies:
   fl_chart: ^0.66.0
   hive: ^2.2.3
   hive_flutter: ^1.1.0
+  http: ^1.2.1
   local_auth: ^2.2.0
+  pointycastle: ^3.7.4
+  asn1lib: ^1.5.8
   tflite_flutter: ^0.10.4
 
 dev_dependencies:
@@ -95,4 +98,5 @@ flutter:
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
   assets:
-    - assets/models/
+    - assets/models/mobilebert_quant.tflite
+    - assets/models/tokenizer.json

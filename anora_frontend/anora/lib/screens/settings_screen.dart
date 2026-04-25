@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../screens/share_report_screen.dart';
 import '../services/auth_service.dart';
 import '../services/storage_service.dart';
 import '../state/settings_controller.dart';
@@ -113,6 +114,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       HapticFeedback.selectionClick();
                     }
                   },
+                ),
+              ),
+              const Divider(),
+              _SettingRow(
+                title: 'Share encrypted report',
+                subtitle: 'Send a privacy-preserving summary to your clinician.',
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ShareReportScreen()),
                 ),
               ),
             ],
