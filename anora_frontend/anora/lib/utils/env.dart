@@ -1,7 +1,13 @@
+import 'package:flutter/foundation.dart';
+
 class Env {
   static const String _definedApiBaseUrl = String.fromEnvironment(
     'API_BASE_URL',
     defaultValue: '',
+  );
+  static const String _cloudFallbackApiBaseUrl = String.fromEnvironment(
+    'CLOUD_API_BASE_URL',
+    defaultValue: 'https://xydctnf6j6.us-east-1.awsapprunner.com',
   );
 
   static const String awsRegion = String.fromEnvironment(
@@ -17,15 +23,26 @@ class Env {
   static String get apiBaseUrl {
     final fromApiBase = _definedApiBaseUrl.trim();
     if (fromApiBase.isNotEmpty) {
-      return _normalize(fromApiBase);
+      final normalized = _normalize(fromApiBase);
+      if (_isDisallowedLocalhost(normalized)) {
+        return _normalize(_cloudFallbackApiBaseUrl);
+      }
+      return normalized;
     }
 
     final fromAppRunner = appRunnerServiceUrl.trim();
     if (fromAppRunner.isNotEmpty) {
-      return _normalize(fromAppRunner);
+      final normalized = _normalize(fromAppRunner);
+      if (_isDisallowedLocalhost(normalized)) {
+        return _normalize(_cloudFallbackApiBaseUrl);
+      }
+      return normalized;
     }
 
-    return 'http://localhost:8000';
+    if (kDebugMode) {
+      return 'http://localhost:8000';
+    }
+    return _normalize(_cloudFallbackApiBaseUrl);
   }
 
   static String _normalize(String url) {
@@ -33,5 +50,17 @@ class Env {
       return url.substring(0, url.length - 1);
     }
     return url;
+  }
+
+  static bool _isDisallowedLocalhost(String url) {
+    if (kDebugMode) {
+      return false;
+    }
+    final parsed = Uri.tryParse(url);
+    if (parsed == null) {
+      return false;
+    }
+    final host = parsed.host.toLowerCase();
+    return host == 'localhost' || host == '127.0.0.1' || host == '::1';
   }
 }

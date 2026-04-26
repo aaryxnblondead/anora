@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../utils/env.dart';
@@ -36,6 +37,10 @@ class ApiEndpointService {
       return null;
     }
 
+    if (!_isLocalhostAllowed(parsed.host)) {
+      return null;
+    }
+
     return _normalize(trimmed);
   }
 
@@ -49,6 +54,10 @@ class ApiEndpointService {
     final parsed = Uri.tryParse(trimmed);
     if (parsed == null || !_isSupportedScheme(parsed.scheme) || parsed.host.trim().isEmpty) {
       throw ArgumentError('Use a valid http or https URL.');
+    }
+
+    if (!_isLocalhostAllowed(parsed.host)) {
+      throw ArgumentError('localhost is only allowed in debug builds. Use a cloud URL.');
     }
 
     await StorageService.instance.settingsBox.put(_overrideKey, _normalize(trimmed));
@@ -69,6 +78,14 @@ class ApiEndpointService {
 
   bool _isSupportedScheme(String scheme) {
     return scheme == 'http' || scheme == 'https';
+  }
+
+  bool _isLocalhostAllowed(String host) {
+    if (kDebugMode) {
+      return true;
+    }
+    final lowered = host.toLowerCase();
+    return lowered != 'localhost' && lowered != '127.0.0.1' && lowered != '::1';
   }
 
   String _normalize(String url) {
