@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,21 +20,36 @@ from psycopg2.extras import Json, RealDictCursor
 load_dotenv(dotenv_path=Path(__file__).with_name(".env"))
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://anora:BrEdPk2825@localhost:5432/anora")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://anoraadmin:4VZib4CcCFU4zfRxADU9XVnL@anora-db.cu56cgggut75.us-east-1.rds.amazonaws.com:5432/anora?sslmode=require")
+DB_CONNECT_TIMEOUT_SECONDS = int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "8"))
+DB_CONNECT_RETRIES = int(os.getenv("DB_CONNECT_RETRIES", "6"))
+DB_RETRY_DELAY_SECONDS = float(os.getenv("DB_RETRY_DELAY_SECONDS", "5"))
 
-# In production, set ALLOWED_ORIGINS to the deployed frontend origin(s).
-ALLOWED_ORIGINS = [
-    origin.strip()
-    for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
-    if origin.strip()
-]
+# CORS primarily impacts browser clients. Native mobile clients are not blocked by CORS.
+# If ALLOWED_ORIGINS='*', allow all origins and disable credentials for spec compliance.
+_allowed_origins_raw = os.getenv("ALLOWED_ORIGINS", "*").strip()
+if _allowed_origins_raw == "*":
+    ALLOWED_ORIGINS = ["*"]
+    ALLOW_CREDENTIALS = False
+else:
+    ALLOWED_ORIGINS = [
+        origin.strip()
+        for origin in _allowed_origins_raw.split(",")
+        if origin.strip()
+    ]
+    if not ALLOWED_ORIGINS:
+        ALLOWED_ORIGINS = ["http://localhost:3000"]
+    ALLOW_CREDENTIALS = True
 
 logger = logging.getLogger("anora.backend")
 logging.basicConfig(level=logging.INFO)
 
 
 def get_connection() -> psycopg2.extensions.connection:
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg2.connect(
+        DATABASE_URL,
+        connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
+    )
 
 
 def ensure_tables() -> None:
@@ -106,9 +122,28 @@ def ensure_tables() -> None:
             )
 
 
+def initialize_database_with_retries() -> None:
+    for attempt in range(1, DB_CONNECT_RETRIES + 1):
+        try:
+            ensure_tables()
+            logger.info("database_init_ok attempt=%s", attempt)
+            return
+        except psycopg2.OperationalError as exc:
+            logger.exception(
+                "database_init_retry_failed attempt=%s/%s",
+                attempt,
+                DB_CONNECT_RETRIES,
+            )
+            if attempt == DB_CONNECT_RETRIES:
+                raise RuntimeError(
+                    "Could not connect to PostgreSQL. Verify DATABASE_URL, VPC routing, and security groups."
+                ) from exc
+            time.sleep(DB_RETRY_DELAY_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    ensure_tables()
+    initialize_database_with_retries()
     yield
 
 
@@ -117,7 +152,7 @@ app = FastAPI(title="Anora Locked Box API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
