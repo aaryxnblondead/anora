@@ -19,7 +19,7 @@ from psycopg2.extras import Json, RealDictCursor
 load_dotenv(dotenv_path=Path(__file__).with_name(".env"))
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://anora:anora@localhost:5432/anora")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://anora:BrEdPk2825@localhost:5432/anora")
 
 # In production, set ALLOWED_ORIGINS to the deployed frontend origin(s).
 ALLOWED_ORIGINS = [
