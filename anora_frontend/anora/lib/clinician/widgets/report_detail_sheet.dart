@@ -56,8 +56,10 @@ class _ReportDetailSheetState extends State<ReportDetailSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final isEmergencyAlert = _record.isEmergencyAlert;
     if (!_record.isDecrypted) {
       return _LockedReportView(
+        isEmergencyAlert: isEmergencyAlert,
         isDecrypting: _decrypting,
         onDecrypt: _decryptNow,
       );
@@ -84,7 +86,7 @@ class _ReportDetailSheetState extends State<ReportDetailSheet> {
             children: [
               Text(_record.patientLabel, style: Theme.of(context).textTheme.headlineMedium),
               const SizedBox(height: 4),
-              Text('Report period', style: Theme.of(context).textTheme.bodySmall),
+              Text(isEmergencyAlert ? 'Emergency alert' : 'Report period', style: Theme.of(context).textTheme.bodySmall),
               Text(_formatDate(_record.receivedAt), style: Theme.of(context).textTheme.bodyMedium),
               const SizedBox(height: 16),
               _SectionCard(
@@ -220,10 +222,12 @@ class _ReportDetailSheetState extends State<ReportDetailSheet> {
 
 class _LockedReportView extends StatelessWidget {
   const _LockedReportView({
+    required this.isEmergencyAlert,
     required this.isDecrypting,
     required this.onDecrypt,
   });
 
+  final bool isEmergencyAlert;
   final bool isDecrypting;
   final Future<void> Function() onDecrypt;
 
@@ -243,7 +247,11 @@ class _LockedReportView extends StatelessWidget {
                 color: Theme.of(context).colorScheme.secondary,
               ),
               const SizedBox(height: 12),
-              Text('Report not yet decrypted', style: Theme.of(context).textTheme.headlineSmall),
+              Text(
+                isEmergencyAlert ? 'Emergency alert is locked' : 'Report not yet decrypted',
+                style: Theme.of(context).textTheme.headlineSmall,
+                textAlign: TextAlign.center,
+              ),
               const SizedBox(height: 10),
               FilledButton(
                 onPressed: isDecrypting ? null : onDecrypt,

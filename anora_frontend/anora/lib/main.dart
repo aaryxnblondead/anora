@@ -7,7 +7,6 @@ import 'screens/journal_screen.dart';
 import 'screens/settings_screen.dart';
 import 'onboarding/onboarding_gate.dart';
 import 'services/ai_inference_service.dart';
-import 'services/clinician_push_service.dart';
 import 'services/storage_service.dart';
 import 'services/tokenizer_service.dart';
 
@@ -18,7 +17,6 @@ Future<void> main() async {
     await StorageService.instance.init();
     await TokenizerService.instance.init();
     await AiInferenceService.instance.init();
-    await ClinicianPushService.instance.ensureFirebaseInitialized();
     
     runApp(const ProviderScope(child: AnoraApp()));
   } catch (e, stackTrace) {

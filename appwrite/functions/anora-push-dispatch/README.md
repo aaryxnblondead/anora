@@ -1,6 +1,8 @@
 # anora-push-dispatch
 
-Starter Appwrite Function for emergency push dispatch requests coming from the backend.
+Deprecated historical stub for the old emergency alert dispatch path.
+
+This folder is kept only as historical reference. The backend now stores emergency alerts in PostgreSQL and the clinician app polls the inbox directly.
 
 ## Purpose
 
@@ -22,19 +24,8 @@ Expected payload shape:
 }
 ```
 
-## Deploy in Appwrite
+## Status
 
-1. Create a function in Appwrite: `anora-push-dispatch`.
-2. Select Node.js runtime.
-3. Upload this folder contents.
-4. Copy the function ID and set it in `backend/.env`:
+Do not deploy this function for the current version of Anora.
 
-`APPWRITE_PUSH_FUNCTION_ID=<function_id>`
-
-5. Switch backend push back on:
-
-`PUSH_PROVIDER=appwrite`
-
-## Next integration step
-
-Replace the TODO in `src/index.js` with real push provider delivery logic.
+If you are migrating an older environment, archive this folder after confirming the backend and clinician inbox polling flow are working in AWS.

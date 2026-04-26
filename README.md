@@ -220,29 +220,34 @@ This flow utilizes Hybrid Encryption (PGP-style logic) to allow doctors to see d
 *   **Transport:** The "Locked Box" is sent to the Blind Mailman API. The server sees only a blob of bytes. It cannot read the contents.
 *   **Decryption:** The doctor's device uses their Private Key (stored only on their device/YubiKey) to unlock the AES key, then unlocks the clinical data.
 
-## Appwrite Backend Deployment
+## GCP Backend Deployment
 
-The backend runs as a FastAPI service backed by PostgreSQL, while emergency push delivery is delegated to an Appwrite Function execution. This preserves existing API behavior and keeps encrypted payload handling server-side.
+The backend now runs as a FastAPI service on Cloud Run, backed by Cloud SQL for PostgreSQL. Emergency alerts are stored durably in PostgreSQL and surfaced through clinician inbox polling, so no push fan-out path is required.
 
 ### Production layout
 
-*   `backend/Dockerfile` listens on the platform `PORT` and runs as a non-root user.
-*   PostgreSQL should be provided by a managed Postgres instance with TLS and least-privilege credentials.
-*   Emergency notifications call an Appwrite Function (`APPWRITE_PUSH_FUNCTION_ID`) with signed server credentials.
+*   `backend/Dockerfile` should listen on the platform `PORT` and run as a non-root user.
+*   Use Cloud Run for the API container image and Artifact Registry for the image repository.
+*   Use Cloud SQL for PostgreSQL with TLS and least-privilege credentials.
+*   Store secrets in Secret Manager and inject them into the Cloud Run service.
+*   If the Flutter web build is hosted separately, use Cloud Storage for static hosting assets.
 
 ### Required environment variables
 
+*   `API_BASE_URL` shared by the Flutter app and backend deployment notes.
+*   `GCP_PROJECT_ID` and `GCP_REGION`.
+*   `CLOUD_RUN_SERVICE_URL` for the deployed API endpoint.
+*   `CLOUD_STORAGE_BUCKET` if the web build is published as static assets.
 *   `DATABASE_URL` for the managed Postgres instance.
 *   `ALLOWED_ORIGINS` listing trusted frontend origins.
-*   `PUSH_PROVIDER=appwrite`.
-*   `APPWRITE_ENDPOINT`, `APPWRITE_PROJECT_ID`, `APPWRITE_API_KEY`, `APPWRITE_PUSH_FUNCTION_ID`.
+*   `CLOUD_SQL_CONNECTION_NAME` and `SECRET_MANAGER_PREFIX` for deployment wiring.
 
 ### Deployment steps
 
-1. Deploy PostgreSQL and set `DATABASE_URL`.
-2. Create an Appwrite Function that accepts emergency payloads and dispatches push notifications to registered clinician devices.
-3. Configure backend environment variables with Appwrite endpoint, project ID, server API key, and function ID.
-4. Deploy the backend container and point the Flutter app's `API_BASE_URL` at that backend domain.
+1. Provision Cloud SQL for PostgreSQL and set `DATABASE_URL`.
+2. Build and publish the backend image to Artifact Registry.
+3. Deploy the backend container to Cloud Run with `API_BASE_URL`, `GCP_PROJECT_ID`, `GCP_REGION`, and Secret Manager references.
+4. If hosting the Flutter web build, upload the compiled assets to Cloud Storage and point `API_BASE_URL` at the Cloud Run URL.
 
 ### C. The Learning Loop (Federated Learning)
 
@@ -300,7 +305,11 @@ docker-compose up -d
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
-| `API_BASE_URL` | URL for the Blind Mailman backend | `http://localhost:8000` |
+| `API_BASE_URL` | URL for the Cloud Run backend | `http://localhost:8000` |
+| `GCP_PROJECT_ID` | Google Cloud project ID | empty |
+| `GCP_REGION` | Google Cloud region for deployment | `us-central1` |
+| `CLOUD_RUN_SERVICE_URL` | Public API URL used by the app | empty |
+| `CLOUD_STORAGE_BUCKET` | Bucket for static web hosting | empty |
 | `OPENAI_API_KEY` | (Legacy/Dev) Placeholder for initial prototyping | `sk-...` |
 | `FL_SERVER_URL` | Endpoint for Federated Learning coordinator | `http://localhost:8080` |
 | `ENABLE_TELEMETRY` | Opt-in crash reporting | `false` |

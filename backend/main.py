@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
-import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib import error, request
 from uuid import UUID
 
 import psycopg2
@@ -22,6 +20,8 @@ load_dotenv(dotenv_path=Path(__file__).with_name(".env"))
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://anora:anora@localhost:5432/anora")
+
+# In production, set ALLOWED_ORIGINS to your App Runner service URL
 ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
@@ -30,13 +30,6 @@ ALLOWED_ORIGINS = [
 
 logger = logging.getLogger("anora.backend")
 logging.basicConfig(level=logging.INFO)
-
-_push_ready = False
-_push_provider = "none"
-_appwrite_endpoint = ""
-_appwrite_project_id = ""
-_appwrite_api_key = ""
-_appwrite_function_id = ""
 
 
 def get_connection() -> psycopg2.extensions.connection:
@@ -111,142 +104,11 @@ def ensure_tables() -> None:
                 );
                 """
             )
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS clinician_device_tokens (
-                  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                  clinician_id TEXT NOT NULL,
-                  device_token TEXT NOT NULL,
-                  platform TEXT NOT NULL,
-                  active BOOLEAN NOT NULL DEFAULT TRUE,
-                  created_at TIMESTAMPTZ DEFAULT NOW(),
-                  last_seen_at TIMESTAMPTZ DEFAULT NOW(),
-                  UNIQUE (clinician_id, device_token)
-                );
-                """
-            )
-
-
-def init_push_dispatcher() -> None:
-    global _push_ready
-    global _push_provider
-    global _appwrite_endpoint
-    global _appwrite_project_id
-    global _appwrite_api_key
-    global _appwrite_function_id
-
-    _push_provider = os.getenv("PUSH_PROVIDER", "appwrite").strip().lower()
-    if _push_provider in {"none", "off", "disabled"}:
-        logger.info("push_disabled via PUSH_PROVIDER")
-        _push_ready = False
-        return
-
-    if _push_provider != "appwrite":
-        logger.warning("unsupported_push_provider provider=%s", _push_provider)
-        _push_ready = False
-        return
-
-    _appwrite_endpoint = os.getenv("APPWRITE_ENDPOINT", "").strip().rstrip("/")
-    _appwrite_project_id = os.getenv("APPWRITE_PROJECT_ID", "").strip()
-    _appwrite_api_key = os.getenv("APPWRITE_API_KEY", "").strip()
-    _appwrite_function_id = os.getenv("APPWRITE_PUSH_FUNCTION_ID", "").strip()
-
-    missing = []
-    if not _appwrite_endpoint:
-        missing.append("APPWRITE_ENDPOINT")
-    if not _appwrite_project_id:
-        missing.append("APPWRITE_PROJECT_ID")
-    if not _appwrite_api_key:
-        missing.append("APPWRITE_API_KEY")
-    if not _appwrite_function_id:
-        missing.append("APPWRITE_PUSH_FUNCTION_ID")
-
-    if missing:
-        logger.warning("push_not_configured missing=%s", ",".join(missing))
-        _push_ready = False
-        return
-
-    _push_ready = True
-    logger.info("push_initialized provider=appwrite")
-
-
-def _execute_appwrite_push(
-    *,
-    clinician_id: str,
-    alert_id: str,
-    tokens: list[str],
-) -> bool:
-    if not _push_ready:
-        return False
-
-    execution_url = (
-        f"{_appwrite_endpoint}/v1/functions/{_appwrite_function_id}/executions"
-    )
-    payload = {
-        "event": "emergency_alert",
-        "severity": "high",
-        "alert_id": alert_id,
-        "clinician_id": clinician_id,
-        "tokens": tokens,
-        "notification": {
-            "title": "High-priority wellness alert",
-            "body": "A linked patient may need immediate support.",
-        },
-    }
-    execution_body = {"body": json.dumps(payload, separators=(",", ":"))}
-    req = request.Request(
-        execution_url,
-        data=json.dumps(execution_body).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "X-Appwrite-Project": _appwrite_project_id,
-            "X-Appwrite-Key": _appwrite_api_key,
-        },
-        method="POST",
-    )
-
-    try:
-        with request.urlopen(req, timeout=10) as response:
-            status_code = int(response.getcode())
-    except error.HTTPError as appwrite_error:
-        logger.warning(
-            "appwrite_push_http_error clinician_id=%s alert_id=%s code=%s",
-            clinician_id,
-            alert_id,
-            appwrite_error.code,
-        )
-        return False
-    except Exception as appwrite_error:  # pragma: no cover - runtime network/env dependent
-        logger.warning(
-            "appwrite_push_failed clinician_id=%s alert_id=%s error=%s",
-            clinician_id,
-            alert_id,
-            appwrite_error,
-        )
-        return False
-
-    if status_code < 200 or status_code >= 300:
-        logger.warning(
-            "appwrite_push_unexpected_status clinician_id=%s alert_id=%s status=%s",
-            clinician_id,
-            alert_id,
-            status_code,
-        )
-        return False
-
-    logger.info(
-        "appwrite_push_dispatched clinician_id=%s alert_id=%s token_count=%s",
-        clinician_id,
-        alert_id,
-        len(tokens),
-    )
-    return True
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     ensure_tables()
-    init_push_dispatcher()
     yield
 
 
@@ -337,112 +199,6 @@ class SecurePayloadUpload(BaseModel):
                 f"locked_box is missing required keys: {', '.join(missing)}"
             )
         return value
-
-
-class FcmTokenRegistration(BaseModel):
-    clinician_id: str = Field(min_length=1)
-    device_token: str = Field(min_length=1)
-    platform: str = Field(min_length=1)
-
-    @field_validator("clinician_id", "device_token", "platform")
-    @classmethod
-    def validate_non_empty(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("must be a non-empty string")
-        return value.strip()
-
-
-@app.post("/clinicians/fcm-tokens/register", status_code=201)
-def register_clinician_fcm_token(payload: FcmTokenRegistration) -> dict[str, str]:
-    with get_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO clinician_device_tokens (
-                  clinician_id,
-                  device_token,
-                  platform,
-                  active,
-                  last_seen_at
-                )
-                VALUES (%s, %s, %s, TRUE, NOW())
-                ON CONFLICT (clinician_id, device_token)
-                DO UPDATE SET
-                  platform = EXCLUDED.platform,
-                  active = TRUE,
-                  last_seen_at = NOW();
-                """,
-                (
-                    payload.clinician_id,
-                    payload.device_token,
-                    payload.platform,
-                ),
-            )
-
-    return {"status": "registered", "clinician_id": payload.clinician_id}
-
-
-def _deactivate_device_token(clinician_id: str, token: str) -> None:
-    with get_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE clinician_device_tokens
-                SET active = FALSE, last_seen_at = NOW()
-                WHERE clinician_id = %s AND device_token = %s;
-                """,
-                (clinician_id, token),
-            )
-
-
-def _fan_out_emergency_push(clinician_id: str, alert_id: str) -> None:
-    if not _push_ready:
-        logger.info(
-            "push_not_ready_skipping_alert_push clinician_id=%s alert_id=%s",
-            clinician_id,
-            alert_id,
-        )
-        return
-
-    with get_connection() as connection:
-        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(
-                """
-                SELECT device_token
-                FROM clinician_device_tokens
-                WHERE clinician_id = %s AND active = TRUE;
-                """,
-                (clinician_id,),
-            )
-            rows = cursor.fetchall()
-
-    tokens = [str(row["device_token"]) for row in rows if row.get("device_token")]
-    if not tokens:
-        logger.info("no_active_push_tokens clinician_id=%s", clinician_id)
-        return
-
-    if _push_provider != "appwrite":
-        logger.warning(
-            "unsupported_push_provider_skipping provider=%s clinician_id=%s alert_id=%s",
-            _push_provider,
-            clinician_id,
-            alert_id,
-        )
-        return
-
-    if not _execute_appwrite_push(
-        clinician_id=clinician_id,
-        alert_id=alert_id,
-        tokens=tokens,
-    ):
-        return
-
-    logger.info(
-        "push_alert_sent clinician_id=%s alert_id=%s attempted_tokens=%s",
-        clinician_id,
-        alert_id,
-        len(tokens),
-    )
 
 
 @app.post("/clinicians/register", status_code=201)
@@ -559,25 +315,41 @@ def upload_emergency_alert(payload: SecurePayloadUpload) -> dict[str, str]:
         raise HTTPException(status_code=500, detail="Failed to store emergency alert")
 
     alert_id = str(row["id"])
-    _fan_out_emergency_push(payload.clinician_id, alert_id)
 
     return {"alert_id": alert_id, "status": "stored"}
 
 
 @app.get("/alerts/emergency/{clinician_id}")
-def get_emergency_alerts(clinician_id: str) -> dict[str, list[dict[str, str]]]:
+def get_emergency_alerts(
+    clinician_id: str,
+    since: str | None = None,
+    limit: int = 100,
+) -> dict[str, list[dict[str, str]]]:
+    query_parts = [
+        "SELECT id, clinician_id, priority, created_at",
+        "FROM emergency_alerts",
+        "WHERE clinician_id = %s",
+    ]
+    params: list[Any] = [clinician_id.strip()]
+
+    if since:
+        try:
+            since_value = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Invalid since format") from exc
+        if since_value.tzinfo is None:
+            since_value = since_value.replace(tzinfo=timezone.utc)
+        query_parts.append("AND created_at > %s")
+        params.append(since_value)
+
+    safe_limit = max(1, min(int(limit), 200))
+    query_parts.append("ORDER BY created_at DESC")
+    query_parts.append("LIMIT %s")
+    params.append(safe_limit)
+
     with get_connection() as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(
-                """
-                SELECT id, clinician_id, priority, created_at
-                FROM emergency_alerts
-                WHERE clinician_id = %s
-                ORDER BY created_at DESC
-                LIMIT 100;
-                """,
-                (clinician_id.strip(),),
-            )
+            cursor.execute("\n".join(query_parts), tuple(params))
             rows = cursor.fetchall()
 
     alerts = []
@@ -593,6 +365,7 @@ def get_emergency_alerts(clinician_id: str) -> dict[str, list[dict[str, str]]]:
                 "clinician_id": str(row.get("clinician_id")),
                 "priority": str(row.get("priority") or "high"),
                 "created_at": created_at_iso,
+                "source_type": "emergency_alert",
             }
         )
 
@@ -638,13 +411,24 @@ def get_report(report_id: str) -> dict[str, object]:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """
-                SELECT id, clinician_id, locked_box, created_at
+                SELECT id, clinician_id, locked_box, created_at, 'report' AS source_type
                 FROM reports
                 WHERE id = %s;
                 """,
                 (report_id,),
             )
             row = cursor.fetchone()
+
+            if row is None:
+                cursor.execute(
+                    """
+                    SELECT id, clinician_id, locked_box, created_at, 'emergency_alert' AS source_type
+                    FROM emergency_alerts
+                    WHERE id = %s;
+                    """,
+                    (report_id,),
+                )
+                row = cursor.fetchone()
 
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found")
@@ -660,6 +444,7 @@ def get_report(report_id: str) -> dict[str, object]:
         "clinician_id": row["clinician_id"],
         "locked_box": row["locked_box"],
         "created_at": created_at_iso,
+        "source_type": row.get("source_type", "report"),
     }
 
 

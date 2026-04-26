@@ -4,10 +4,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
 import '../services/clinician_crypto_service.dart';
+import '../services/clinician_push_service.dart';
 import '../services/storage_service.dart';
 import '../utils/env.dart';
 
-const _clinicianReportsCacheKey = 'clinician_reports_cache';
+const _clinicianInboxCacheKey = 'clinician_inbox_cache';
+
+enum ClinicianInboxItemKind { report, emergencyAlert }
 
 class ClinicianProfile {
   const ClinicianProfile({
@@ -53,6 +56,9 @@ class PatientRecord {
     required this.encryptedKeyB64,
     required this.encryptedPayload,
     required this.riskTrend,
+    this.kind = ClinicianInboxItemKind.report,
+    this.isUnread = false,
+    this.alertPriority,
   });
 
   final String patientLabel;
@@ -67,6 +73,11 @@ class PatientRecord {
   final String? encryptedKeyB64;
   final Map<String, String>? encryptedPayload;
   final List<int>? riskTrend;
+  final ClinicianInboxItemKind kind;
+  final bool isUnread;
+  final String? alertPriority;
+
+  bool get isEmergencyAlert => kind == ClinicianInboxItemKind.emergencyAlert;
 
   PatientRecord copyWith({
     String? patientLabel,
@@ -81,6 +92,9 @@ class PatientRecord {
     String? encryptedKeyB64,
     Map<String, String>? encryptedPayload,
     List<int>? riskTrend,
+    ClinicianInboxItemKind? kind,
+    bool? isUnread,
+    String? alertPriority,
   }) {
     return PatientRecord(
       patientLabel: patientLabel ?? this.patientLabel,
@@ -95,6 +109,9 @@ class PatientRecord {
       encryptedKeyB64: encryptedKeyB64 ?? this.encryptedKeyB64,
       encryptedPayload: encryptedPayload ?? this.encryptedPayload,
       riskTrend: riskTrend ?? this.riskTrend,
+      kind: kind ?? this.kind,
+      isUnread: isUnread ?? this.isUnread,
+      alertPriority: alertPriority ?? this.alertPriority,
     );
   }
 
@@ -148,6 +165,31 @@ class PatientRecord {
       encryptedKeyB64: json['encryptedKeyB64'] as String?,
       encryptedPayload: encryptedMap.isEmpty ? null : encryptedMap,
       riskTrend: trend.isEmpty ? null : trend,
+      kind: (json['kind'] as String?) == 'emergencyAlert'
+          ? ClinicianInboxItemKind.emergencyAlert
+          : ClinicianInboxItemKind.report,
+      isUnread: json['isUnread'] == true,
+      alertPriority: json['alertPriority'] as String?,
+    );
+  }
+
+  factory PatientRecord.fromEmergencyAlert(Map<String, dynamic> json) {
+    return PatientRecord(
+      patientLabel: (json['patientLabel'] as String?) ?? 'Emergency alert',
+      reportId: (json['alert_id'] as String?) ?? (json['reportId'] as String?) ?? '',
+      receivedAt: DateTime.tryParse((json['created_at'] as String?) ?? (json['createdAt'] as String?) ?? '') ?? DateTime.now(),
+      clinicianId: (json['clinician_id'] as String?) ?? (json['clinicianId'] as String?) ?? '',
+      entryCount: null,
+      avgMoodScore: null,
+      riskFlagCounts: const <String, int>{'emergency': 1},
+      topEmotion: 'Emergency',
+      isDecrypted: false,
+      encryptedKeyB64: null,
+      encryptedPayload: null,
+      riskTrend: null,
+      kind: ClinicianInboxItemKind.emergencyAlert,
+      isUnread: json['isUnread'] != false,
+      alertPriority: (json['priority'] as String?) ?? 'high',
     );
   }
 
@@ -165,6 +207,9 @@ class PatientRecord {
       'encryptedKeyB64': encryptedKeyB64,
       'encryptedPayload': encryptedPayload,
       'riskTrend': riskTrend,
+      'kind': kind.name,
+      'isUnread': isUnread,
+      'alertPriority': alertPriority,
     };
   }
 }
@@ -172,25 +217,45 @@ class PatientRecord {
 class ClinicianReportsState {
   const ClinicianReportsState({
     this.records = const <PatientRecord>[],
+    this.alerts = const <PatientRecord>[],
+    this.unreadAlertIds = const <String>{},
+    this.lastAlertSyncAt,
     this.isLoading = false,
     this.error,
   });
 
   final List<PatientRecord> records;
+  final List<PatientRecord> alerts;
+  final Set<String> unreadAlertIds;
+  final DateTime? lastAlertSyncAt;
   final bool isLoading;
   final String? error;
 
   ClinicianReportsState copyWith({
     List<PatientRecord>? records,
+    List<PatientRecord>? alerts,
+    Set<String>? unreadAlertIds,
+    DateTime? lastAlertSyncAt,
     bool? isLoading,
     String? error,
   }) {
     return ClinicianReportsState(
       records: records ?? this.records,
+      alerts: alerts ?? this.alerts,
+      unreadAlertIds: unreadAlertIds ?? this.unreadAlertIds,
+      lastAlertSyncAt: lastAlertSyncAt ?? this.lastAlertSyncAt,
       isLoading: isLoading ?? this.isLoading,
       error: error,
     );
   }
+
+  List<PatientRecord> get inboxRecords {
+    final allRecords = <PatientRecord>[...records, ...alerts];
+    allRecords.sort((a, b) => b.receivedAt.compareTo(a.receivedAt));
+    return allRecords;
+  }
+
+  int get unreadAlertCount => unreadAlertIds.length;
 }
 
 final clinicianReportsProvider =
@@ -206,28 +271,132 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
   final StorageService _storage;
 
   void loadFromLocalCache() {
-    final raw = _storage.settingsBox.get(_clinicianReportsCacheKey);
+    final raw = _storage.settingsBox.get(_clinicianInboxCacheKey);
     if (raw == null) {
-      state = state.copyWith(records: <PatientRecord>[], isLoading: false, error: null);
+      state = state.copyWith(
+        records: <PatientRecord>[],
+        alerts: <PatientRecord>[],
+        unreadAlertIds: <String>{},
+        lastAlertSyncAt: null,
+        isLoading: false,
+        error: null,
+      );
       return;
     }
 
     try {
       final decoded = raw is String ? jsonDecode(raw) : raw;
-      if (decoded is! List) {
-        state = state.copyWith(error: 'Invalid local reports cache format.');
+      if (decoded is List) {
+        final records = decoded
+            .whereType<Map>()
+            .map((map) => PatientRecord.fromJson(Map<String, dynamic>.from(map)))
+            .where((record) => !record.isEmergencyAlert)
+            .toList(growable: false)
+          ..sort((a, b) => b.receivedAt.compareTo(a.receivedAt));
+
+        state = state.copyWith(records: records, alerts: const <PatientRecord>[], isLoading: false, error: null);
         return;
       }
 
-      final records = decoded
-          .whereType<Map>()
-          .map((map) => PatientRecord.fromJson(Map<String, dynamic>.from(map)))
+      if (decoded is! Map<String, dynamic>) {
+        state = state.copyWith(error: 'Invalid local inbox cache format.');
+        return;
+      }
+
+      final rawReports = decoded['records'];
+      final rawAlerts = decoded['alerts'];
+      final rawUnread = decoded['unreadAlertIds'];
+      final rawLastSync = decoded['lastAlertSyncAt'];
+
+      final records = _decodeRecordList(rawReports, includeAlerts: false);
+      final alerts = _decodeRecordList(rawAlerts, includeAlerts: true)
+          .map((record) => record.copyWith(kind: ClinicianInboxItemKind.emergencyAlert))
           .toList(growable: false)
         ..sort((a, b) => b.receivedAt.compareTo(a.receivedAt));
 
-      state = state.copyWith(records: records, isLoading: false, error: null);
+      final unreadAlertIds = <String>{};
+      if (rawUnread is List) {
+        for (final value in rawUnread) {
+          if (value is String && value.trim().isNotEmpty) {
+            unreadAlertIds.add(value.trim());
+          }
+        }
+      }
+
+      DateTime? lastAlertSyncAt;
+      if (rawLastSync is String) {
+        lastAlertSyncAt = DateTime.tryParse(rawLastSync);
+      }
+
+      state = state.copyWith(
+        records: records,
+        alerts: alerts,
+        unreadAlertIds: unreadAlertIds,
+        lastAlertSyncAt: lastAlertSyncAt,
+        isLoading: false,
+        error: null,
+      );
     } catch (error) {
       state = state.copyWith(error: 'Could not parse reports cache: $error', isLoading: false);
+    }
+  }
+
+  Future<void> syncEmergencyAlerts() async {
+    final clinicianId = (_storage.settingsBox.get('clinician_id') as String?)?.trim();
+    if (clinicianId == null || clinicianId.isEmpty) {
+      return;
+    }
+
+    try {
+      final alerts = await ClinicianInboxSyncService.instance.fetchEmergencyAlerts(
+        clinicianId: clinicianId,
+        since: state.lastAlertSyncAt,
+      );
+
+      final mergedAlerts = <PatientRecord>[];
+      final existingById = <String, PatientRecord>{
+        for (final alert in state.alerts) alert.reportId: alert,
+      };
+
+      final unreadIds = <String>{...state.unreadAlertIds};
+      for (final snapshot in alerts) {
+        final alert = PatientRecord.fromEmergencyAlert({
+          'alert_id': snapshot.alertId,
+          'clinician_id': snapshot.clinicianId,
+          'priority': snapshot.priority,
+          'created_at': snapshot.createdAt.toIso8601String(),
+        });
+        final existing = existingById[alert.reportId];
+        final merged = alert.copyWith(
+          isUnread: existing?.isUnread ?? true,
+          alertPriority: existing?.alertPriority ?? alert.alertPriority,
+        );
+        mergedAlerts.add(merged);
+        if (merged.isUnread) {
+          unreadIds.add(merged.reportId);
+        }
+      }
+
+      final combinedAlerts = <PatientRecord>[...state.alerts];
+      for (final alert in mergedAlerts) {
+        final index = combinedAlerts.indexWhere((record) => record.reportId == alert.reportId);
+        if (index >= 0) {
+          combinedAlerts[index] = alert;
+        } else {
+          combinedAlerts.add(alert);
+        }
+      }
+      combinedAlerts.sort((a, b) => b.receivedAt.compareTo(a.receivedAt));
+
+      state = state.copyWith(
+        alerts: combinedAlerts,
+        unreadAlertIds: unreadIds,
+        lastAlertSyncAt: DateTime.now().toUtc(),
+        error: null,
+      );
+      await _persistCache();
+    } catch (error) {
+      state = state.copyWith(error: 'Could not sync alerts: $error');
     }
   }
 
@@ -251,6 +420,8 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
       if (body is! Map<String, dynamic>) {
         throw Exception('Unexpected response payload.');
       }
+
+      final sourceType = (body['source_type'] as String?) ?? 'report';
 
       final lockedBox = body['locked_box'];
       if (lockedBox is! Map<String, dynamic>) {
@@ -286,7 +457,28 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
         encryptedKeyB64: encryptedKeyB64,
         encryptedPayload: encryptedPayload,
         riskTrend: null,
+        kind: sourceType == 'emergency_alert'
+            ? ClinicianInboxItemKind.emergencyAlert
+            : ClinicianInboxItemKind.report,
+        isUnread: sourceType == 'emergency_alert' ? true : false,
+        alertPriority: sourceType == 'emergency_alert' ? 'high' : null,
       );
+
+      if (sourceType == 'emergency_alert') {
+        final alertIndex = state.alerts.indexWhere((record) => record.reportId == id);
+        final updatedAlerts = [...state.alerts];
+        if (alertIndex >= 0) {
+          updatedAlerts[alertIndex] = baseRecord;
+        } else {
+          updatedAlerts.add(baseRecord);
+        }
+        updatedAlerts.sort((a, b) => b.receivedAt.compareTo(a.receivedAt));
+
+        final unreadIds = <String>{...state.unreadAlertIds, id};
+        state = state.copyWith(alerts: updatedAlerts, unreadAlertIds: unreadIds, isLoading: false, error: null);
+        await _persistCache();
+        return;
+      }
 
       final updated = [...state.records];
       if (existingIndex >= 0) {
@@ -297,7 +489,7 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
       updated.sort((a, b) => b.receivedAt.compareTo(a.receivedAt));
 
       state = state.copyWith(records: updated, isLoading: false, error: null);
-      await _persistCache(updated);
+      await _persistCache();
     } catch (error) {
       state = state.copyWith(isLoading: false, error: 'Could not fetch report: $error');
       rethrow;
@@ -357,7 +549,7 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
       updated.sort((a, b) => b.receivedAt.compareTo(a.receivedAt));
 
       state = state.copyWith(records: updated, isLoading: false, error: null);
-      await _persistCache(updated);
+      await _persistCache();
 
       // TODO: Add expiry/revocation policy for locally decrypted report access.
     } catch (error) {
@@ -379,12 +571,35 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
         .toList(growable: false);
 
     state = state.copyWith(records: updated, error: null);
-    await _persistCache(updated);
+    await _persistCache();
   }
 
-  Future<void> _persistCache(List<PatientRecord> records) async {
-    final encoded = jsonEncode(records.map((record) => record.toJson()).toList(growable: false));
-    await _storage.settingsBox.put(_clinicianReportsCacheKey, encoded);
+  Future<void> markAlertRead(String alertId) async {
+    if (alertId.trim().isEmpty) return;
+
+    final updatedAlerts = state.alerts
+        .map(
+          (record) => record.reportId == alertId
+              ? record.copyWith(isUnread: false)
+              : record,
+        )
+        .toList(growable: false);
+
+    final unreadIds = <String>{...state.unreadAlertIds}..remove(alertId);
+    state = state.copyWith(alerts: updatedAlerts, unreadAlertIds: unreadIds, error: null);
+    await _persistCache();
+  }
+
+  Future<void> _persistCache() async {
+    final encoded = jsonEncode(
+      {
+        'records': state.records.map((record) => record.toJson()).toList(growable: false),
+        'alerts': state.alerts.map((record) => record.toJson()).toList(growable: false),
+        'unreadAlertIds': state.unreadAlertIds.toList(growable: false),
+        'lastAlertSyncAt': state.lastAlertSyncAt?.toIso8601String(),
+      },
+    );
+    await _storage.settingsBox.put(_clinicianInboxCacheKey, encoded);
   }
 
   PatientRecord? findByReportId(String reportId) {
@@ -393,7 +608,27 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
         return record;
       }
     }
+    for (final alert in state.alerts) {
+      if (alert.reportId == reportId) {
+        return alert;
+      }
+    }
     return null;
+  }
+
+  List<PatientRecord> _decodeRecordList(dynamic raw, {required bool includeAlerts}) {
+    if (raw is! List) return <PatientRecord>[];
+
+    final records = <PatientRecord>[];
+    for (final value in raw) {
+      if (value is! Map) continue;
+      final record = PatientRecord.fromJson(Map<String, dynamic>.from(value));
+      if (includeAlerts || !record.isEmergencyAlert) {
+        records.add(record);
+      }
+    }
+    records.sort((a, b) => b.receivedAt.compareTo(a.receivedAt));
+    return records;
   }
 
   String _defaultPatientLabel(int index) {

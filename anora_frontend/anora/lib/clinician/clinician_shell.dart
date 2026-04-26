@@ -1,25 +1,22 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'patients_tab.dart';
 import 'profile_tab.dart';
 import 'reports_tab.dart';
-import '../services/clinician_push_service.dart';
+import '../state/clinician_state.dart';
 
-class ClinicianShell extends StatefulWidget {
+class ClinicianShell extends ConsumerStatefulWidget {
   const ClinicianShell({super.key});
 
   @override
-  State<ClinicianShell> createState() => _ClinicianShellState();
+  ConsumerState<ClinicianShell> createState() => _ClinicianShellState();
 }
 
-class _ClinicianShellState extends State<ClinicianShell> {
+class _ClinicianShellState extends ConsumerState<ClinicianShell>
+    with WidgetsBindingObserver {
   int _currentIndex = 0;
   late final PageController _pageController;
-  StreamSubscription<RemoteMessage>? _foregroundSub;
-  StreamSubscription<RemoteMessage>? _openedAppSub;
 
   final List<_ClinicianNavTab> _tabs = const [
     _ClinicianNavTab(label: 'Patients', icon: Icons.people_rounded),
@@ -31,57 +28,26 @@ class _ClinicianShellState extends State<ClinicianShell> {
   void initState() {
     super.initState();
     _pageController = PageController();
-    _initializePushMessaging();
+    WidgetsBinding.instance.addObserver(this);
+    _syncInboxOnResume();
   }
 
   @override
   void dispose() {
-    _foregroundSub?.cancel();
-    _openedAppSub?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     _pageController.dispose();
     super.dispose();
   }
 
-  Future<void> _initializePushMessaging() async {
-    await ClinicianPushService.instance.startForClinician();
-
-    _foregroundSub = ClinicianPushService.instance.foregroundMessages.listen((message) {
-      if (!mounted) return;
-      _showEmergencyDialog(message);
-    });
-
-    _openedAppSub = ClinicianPushService.instance.openedAppMessages.listen((_) {
-      if (!mounted) return;
-      _jumpTo(1);
-    });
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _syncInboxOnResume();
+    }
   }
 
-  Future<void> _showEmergencyDialog(RemoteMessage message) async {
-    final title =
-        message.notification?.title ?? 'High-priority wellness alert';
-    final body = message.notification?.body ??
-        'A linked patient may need immediate support.';
-
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: Text(body),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Dismiss'),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-              _jumpTo(1);
-            },
-            child: const Text('View Reports'),
-          ),
-        ],
-      ),
-    );
+  Future<void> _syncInboxOnResume() async {
+    await ref.read(clinicianReportsProvider.notifier).syncEmergencyAlerts();
   }
 
   void _jumpTo(int index) {
@@ -96,6 +62,7 @@ class _ClinicianShellState extends State<ClinicianShell> {
 
   @override
   Widget build(BuildContext context) {
+    final state = ref.watch(clinicianReportsProvider);
     return Scaffold(
       body: SafeArea(
         child: PageView(
@@ -113,9 +80,56 @@ class _ClinicianShellState extends State<ClinicianShell> {
         currentIndex: _currentIndex,
         onTap: _jumpTo,
         items: _tabs
-            .map((tab) => BottomNavigationBarItem(icon: Icon(tab.icon), label: tab.label))
+            .map(
+              (tab) => BottomNavigationBarItem(
+                icon: _TabIcon(
+                  icon: tab.icon,
+                  unreadCount: tab.label == 'Reports' ? state.unreadAlertCount : 0,
+                ),
+                label: tab.label,
+              ),
+            )
             .toList(growable: false),
       ),
+    );
+  }
+}
+
+class _TabIcon extends StatelessWidget {
+  const _TabIcon({required this.icon, required this.unreadCount});
+
+  final IconData icon;
+  final int unreadCount;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Icon(icon),
+        if (unreadCount > 0)
+          Positioned(
+            right: -8,
+            top: -6,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.error,
+                borderRadius: BorderRadius.circular(999),
+              ),
+              constraints: const BoxConstraints(minWidth: 18),
+              child: Text(
+                unreadCount > 9 ? '9+' : '$unreadCount',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: Colors.white,
+                      fontSize: 10,
+                      height: 1.0,
+                    ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }

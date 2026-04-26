@@ -12,10 +12,10 @@ class ReportsTab extends ConsumerWidget {
     final state = ref.watch(clinicianReportsProvider);
     final notifier = ref.read(clinicianReportsProvider.notifier);
 
-    final records = [...state.records]..sort((a, b) => b.receivedAt.compareTo(a.receivedAt));
-    final total = records.length;
-    final decrypted = records.where((record) => record.isDecrypted).length;
-    final flagged = records.where((record) {
+    final inboxRecords = state.inboxRecords;
+    final reportCount = state.records.length;
+    final decrypted = state.records.where((record) => record.isDecrypted).length;
+    final flagged = inboxRecords.where((record) {
       final risk = record.riskFlagCounts;
       if (risk == null) return false;
       return risk.values.any((count) => count > 0);
@@ -29,33 +29,44 @@ class ReportsTab extends ConsumerWidget {
           Text('Reports', style: Theme.of(context).textTheme.headlineMedium),
           const SizedBox(height: 6),
           Text(
-            'Tap any report to view its decrypted summary.',
+            'Tap any report or emergency alert to view its locked-box summary.',
             style: Theme.of(context).textTheme.bodyMedium,
           ),
           const SizedBox(height: 12),
           Row(
             children: [
-              Expanded(child: _StatCard(value: '$total', label: 'Total reports')),
+              Expanded(child: _StatCard(value: '$reportCount', label: 'Reports')),
               const SizedBox(width: 8),
               Expanded(child: _StatCard(value: '$decrypted', label: 'Decrypted')),
               const SizedBox(width: 8),
-              Expanded(child: _StatCard(value: '$flagged', label: 'Flagged')),
+              Expanded(child: _StatCard(value: '${state.unreadAlertCount}', label: 'Unread alerts')),
             ],
           ),
+          if (flagged > 0) ...[
+            const SizedBox(height: 8),
+            Text(
+              '$flagged item${flagged == 1 ? '' : 's'} have risk flags.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+          if (state.alerts.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            Text('Emergency inbox', style: Theme.of(context).textTheme.titleMedium),
+          ],
           const SizedBox(height: 12),
           Expanded(
-            child: records.isEmpty
+            child: inboxRecords.isEmpty
                 ? Center(
                     child: Text(
-                      'No reports yet.',
+                      'No reports or alerts yet.',
                       style: Theme.of(context).textTheme.bodyMedium,
                     ),
                   )
                 : ListView.separated(
-                    itemCount: records.length,
+                    itemCount: inboxRecords.length,
                     separatorBuilder: (_, __) => const SizedBox(height: 8),
                     itemBuilder: (context, index) {
-                      final record = records[index];
+                      final record = inboxRecords[index];
                       return _ReportListTile(record: record, notifier: notifier);
                     },
                   ),
@@ -114,6 +125,7 @@ class _ReportListTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isEmergencyAlert = record.isEmergencyAlert;
     final score = record.avgMoodScore;
     final moodColor = _scoreColor(context, score);
 
@@ -122,7 +134,11 @@ class _ReportListTile extends StatelessWidget {
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
-        onTap: () {
+        onTap: () async {
+          if (isEmergencyAlert) {
+            await notifier.markAlertRead(record.reportId);
+          }
+          if (!context.mounted) return;
           showModalBottomSheet<void>(
             context: context,
             isScrollControlled: true,
@@ -136,31 +152,69 @@ class _ReportListTile extends StatelessWidget {
             border: Border.all(color: const Color(0xFFE0DED7)),
           ),
           child: ListTile(
-            leading: Icon(
-              record.isDecrypted ? Icons.lock_open_rounded : Icons.lock_rounded,
-              color: record.isDecrypted
-                  ? Theme.of(context).colorScheme.primary
-                  : Theme.of(context).colorScheme.secondary,
+            leading: CircleAvatar(
+              backgroundColor: isEmergencyAlert ? const Color(0xFFFFF0EA) : const Color(0xFFF1F0EB),
+              foregroundColor: isEmergencyAlert
+                  ? Theme.of(context).colorScheme.error
+                  : Theme.of(context).colorScheme.primary,
+              child: Icon(
+                isEmergencyAlert
+                    ? Icons.warning_rounded
+                    : record.isDecrypted
+                        ? Icons.lock_open_rounded
+                        : Icons.lock_rounded,
+              ),
             ),
             title: Text(record.patientLabel),
-            subtitle: Text(_formatDate(record.receivedAt)),
-            trailing: record.isDecrypted && score != null
-                ? Row(
+            subtitle: Text(
+              isEmergencyAlert
+                  ? '${record.alertPriority ?? 'high'} priority · ${_formatDate(record.receivedAt)}'
+                  : _formatDate(record.receivedAt),
+            ),
+            trailing: isEmergencyAlert
+                ? Column(
                     mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          color: moodColor,
-                          shape: BoxShape.circle,
+                      if (record.isUnread)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.error,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: const Text(
+                            'Unread',
+                            style: TextStyle(color: Colors.white, fontSize: 11),
+                          ),
                         ),
+                      if (record.isUnread) const SizedBox(height: 6),
+                      Text(
+                        'Alert',
+                        style: Theme.of(context)
+                            .textTheme
+                            .labelMedium
+                            ?.copyWith(color: Theme.of(context).colorScheme.error),
                       ),
-                      const SizedBox(width: 6),
-                      Text('${(score * 100).round()}%'),
                     ],
                   )
-                : null,
+                : record.isDecrypted && score != null
+                    ? Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 8,
+                            height: 8,
+                            decoration: BoxDecoration(
+                              color: moodColor,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Text('${(score * 100).round()}%'),
+                        ],
+                      )
+                    : null,
           ),
         ),
       ),

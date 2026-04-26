@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
 
 import '../models/journal_entry.dart';
+import '../utils/env.dart';
 import '../services/storage_service.dart';
 import '../widgets/journal_mascot.dart';
 
@@ -186,57 +188,87 @@ class _HomeContent extends StatelessWidget {
     final quote = _currentQuote(quoteState);
     final mascotMood = _mascotMoodFor(recentMood);
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('Home', style: Theme.of(context).textTheme.headlineMedium),
-        const SizedBox(height: 6),
-        Text(
-          'A gentle snapshot of your recent mood.',
-          style: Theme.of(context).textTheme.bodyMedium,
-        ),
-        const SizedBox(height: 16),
-        _MascotPanel(mood: mascotMood),
-        const SizedBox(height: 16),
-        _MoodSummaryCard(
-          summary: summary,
-          recentMood: recentMood,
-          sparklinePoints: sparklinePoints,
-        ),
-        const SizedBox(height: 16),
-        _QuoteCard(
-          quote: quote,
-          isLoading: !quoteState.isLoaded,
-          onNextQuote: onNextQuote,
-          onToggleFavorite: onToggleFavorite,
-        ),
-        const Spacer(),
-        SizedBox(
-          width: double.infinity,
-          child: FilledButton.icon(
-            onPressed: onGoToJournal,
-            icon: const Icon(Icons.edit_note_rounded),
-            label: const Text('Go to Journal'),
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Home', style: Theme.of(context).textTheme.headlineMedium),
+          const SizedBox(height: 6),
+          Text(
+            'A gentle snapshot of your recent mood.',
+            style: Theme.of(context).textTheme.bodyMedium,
           ),
-        ),
-        const SizedBox(height: 10),
-        SizedBox(
-          width: double.infinity,
-          child: OutlinedButton.icon(
-            onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text(
-                    'If you are in immediate danger, please call your local emergency number.',
+          const SizedBox(height: 16),
+          _MascotPanel(mood: mascotMood),
+          const SizedBox(height: 16),
+          _MoodSummaryCard(
+            summary: summary,
+            recentMood: recentMood,
+            sparklinePoints: sparklinePoints,
+          ),
+          const SizedBox(height: 16),
+          _QuoteCard(
+            quote: quote,
+            isLoading: !quoteState.isLoaded,
+            onNextQuote: onNextQuote,
+            onToggleFavorite: onToggleFavorite,
+          ),
+          const SizedBox(height: 24),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: onGoToJournal,
+              icon: const Icon(Icons.edit_note_rounded),
+              label: const Text('Go to Journal'),
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'If you are in immediate danger, please call your local emergency number.',
+                    ),
                   ),
-                ),
-              );
-            },
-            icon: const Icon(Icons.emergency_rounded),
-            label: const Text('I need immediate help / emergency'),
+                );
+              },
+              icon: const Icon(Icons.emergency_rounded),
+              label: const Text('I need immediate help / emergency'),
+            ),
           ),
-        ),
-      ],
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () async {
+                try {
+                  final response = await http.get(Uri.parse('${Env.apiBaseUrl}/health'));
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        response.statusCode == 200
+                            ? 'Backend reachable through AWS deployment.'
+                            : 'Backend ping returned HTTP ${response.statusCode}.',
+                      ),
+                    ),
+                  );
+                } catch (error) {
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Could not reach backend: $error')),
+                  );
+                }
+              },
+              icon: const Icon(Icons.cloud_sync_rounded),
+              label: const Text('Send a ping'),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
