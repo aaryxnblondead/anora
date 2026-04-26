@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -68,12 +70,78 @@ class ApiEndpointService {
     return Uri.parse('$baseUrl$normalizedPath').replace(queryParameters: queryParameters);
   }
 
+  Future<http.Response> get(
+    Uri uri, {
+    Duration timeout = const Duration(seconds: 10),
+  }) {
+    return _requestWithRetry(() => http.get(uri).timeout(timeout));
+  }
+
+  Future<http.Response> post(
+    Uri uri, {
+    Map<String, String>? headers,
+    Object? body,
+    Encoding? encoding,
+    Duration timeout = const Duration(seconds: 12),
+  }) {
+    return _requestWithRetry(
+      () => http.post(
+        uri,
+        headers: headers,
+        body: body,
+        encoding: encoding,
+      ).timeout(timeout),
+    );
+  }
+
   Future<void> ping({Duration timeout = const Duration(seconds: 8)}) async {
     final uri = buildUri('/health');
-    final response = await http.get(uri).timeout(timeout);
+    final response = await get(uri, timeout: timeout);
     if (response.statusCode != 200) {
       throw StateError('HTTP ${response.statusCode} from $uri');
     }
+  }
+
+  Future<http.Response> _requestWithRetry(
+    Future<http.Response> Function() request,
+  ) async {
+    const maxAttempts = 3;
+    const retryDelays = <Duration>[
+      Duration(milliseconds: 350),
+      Duration(milliseconds: 900),
+    ];
+
+    Object? lastError;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await request();
+      } catch (error) {
+        lastError = error;
+        if (!_isRetryableNetworkError(error) || attempt == maxAttempts) {
+          rethrow;
+        }
+        await Future<void>.delayed(retryDelays[attempt - 1]);
+      }
+    }
+
+    throw StateError('Request failed: $lastError');
+  }
+
+  bool _isRetryableNetworkError(Object error) {
+    if (error is TimeoutException) {
+      return true;
+    }
+    if (error is! SocketException) {
+      return false;
+    }
+
+    final message = error.message.toLowerCase();
+    final code = error.osError?.errorCode;
+    return message.contains('failed host lookup') ||
+        message.contains('temporary failure in name resolution') ||
+        code == 7 ||
+        code == 110 ||
+        code == 11;
   }
 
   bool _isSupportedScheme(String scheme) {

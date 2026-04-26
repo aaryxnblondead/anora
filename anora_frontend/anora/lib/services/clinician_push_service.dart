@@ -1,7 +1,5 @@
 import 'dart:convert';
 
-import 'package:http/http.dart' as http;
-
 import 'api_endpoint_service.dart';
 
 class ClinicianInboxAlertSnapshot {
@@ -44,7 +42,7 @@ class ClinicianInboxSyncService {
       },
     );
 
-    final response = await http.get(uri);
+    final response = await ApiEndpointService.instance.get(uri);
     if (response.statusCode != 200) {
       throw Exception('HTTP ${response.statusCode}: ${response.body}');
     }

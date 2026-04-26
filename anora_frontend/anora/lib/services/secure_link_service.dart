@@ -1,8 +1,6 @@
 import 'dart:convert';
 import 'dart:math';
 
-import 'package:http/http.dart' as http;
-
 import '../models/journal_entry.dart';
 import 'api_endpoint_service.dart';
 import 'report_service.dart';
@@ -42,7 +40,7 @@ class SecureLinkService {
     try {
       final patientDeviceId = await _getOrCreatePatientDeviceId();
       final uri = ApiEndpointService.instance.buildUri('/clinicians/link');
-      final response = await http.post(
+      final response = await ApiEndpointService.instance.post(
         uri,
         headers: const {'Content-Type': 'application/json'},
         body: jsonEncode(
@@ -92,7 +90,7 @@ class SecureLinkService {
     }
 
     final uri = ApiEndpointService.instance.buildUri('/clinicians/register');
-    final response = await http.post(
+    final response = await ApiEndpointService.instance.post(
       uri,
       headers: const {'Content-Type': 'application/json'},
       body: jsonEncode(
@@ -201,7 +199,7 @@ class SecureLinkService {
   }) async {
     final patientDeviceId = await _getOrCreatePatientDeviceId();
     final uri = ApiEndpointService.instance.buildUri(path);
-    final response = await http.post(
+    final response = await ApiEndpointService.instance.post(
       uri,
       headers: const {'Content-Type': 'application/json'},
       body: jsonEncode(

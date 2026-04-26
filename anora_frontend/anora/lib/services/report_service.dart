@@ -1,7 +1,5 @@
 import 'dart:convert';
 
-import 'package:http/http.dart' as http;
-
 import '../models/journal_entry.dart';
 import 'api_endpoint_service.dart';
 import 'crypto_service.dart';
@@ -150,7 +148,7 @@ class ReportService {
 
     // TODO: validate clinician_id against registered clinicians.
     final uri = ApiEndpointService.instance.buildUri('/reports');
-    final response = await http.post(
+    final response = await ApiEndpointService.instance.post(
       uri,
       headers: const <String, String>{
         'Content-Type': 'application/json',
