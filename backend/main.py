@@ -20,10 +20,12 @@ from psycopg2.extras import Json, RealDictCursor
 load_dotenv(dotenv_path=Path(__file__).with_name(".env"))
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://anoraadmin:4VZib4CcCFU4zfRxADU9XVnL@anora-db.cu56cgggut75.us-east-1.rds.amazonaws.com:5432/anora?sslmode=require")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://anora:anora@localhost:5432/anora")
 DB_CONNECT_TIMEOUT_SECONDS = int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "8"))
 DB_CONNECT_RETRIES = int(os.getenv("DB_CONNECT_RETRIES", "6"))
 DB_RETRY_DELAY_SECONDS = float(os.getenv("DB_RETRY_DELAY_SECONDS", "5"))
+DB_READY = False
+DB_INIT_ERROR: str | None = None
 
 # CORS primarily impacts browser clients. Native mobile clients are not blocked by CORS.
 # If ALLOWED_ORIGINS='*', allow all origins and disable credentials for spec compliance.
@@ -123,10 +125,13 @@ def ensure_tables() -> None:
 
 
 def initialize_database_with_retries() -> None:
+    global DB_READY, DB_INIT_ERROR
     for attempt in range(1, DB_CONNECT_RETRIES + 1):
         try:
             ensure_tables()
             logger.info("database_init_ok attempt=%s", attempt)
+            DB_READY = True
+            DB_INIT_ERROR = None
             return
         except psycopg2.OperationalError as exc:
             logger.exception(
@@ -135,9 +140,12 @@ def initialize_database_with_retries() -> None:
                 DB_CONNECT_RETRIES,
             )
             if attempt == DB_CONNECT_RETRIES:
-                raise RuntimeError(
+                DB_READY = False
+                DB_INIT_ERROR = (
                     "Could not connect to PostgreSQL. Verify DATABASE_URL, VPC routing, and security groups."
-                ) from exc
+                )
+                logger.error("database_init_failed_final %s", DB_INIT_ERROR)
+                return
             time.sleep(DB_RETRY_DELAY_SECONDS)
 
 
@@ -484,5 +492,11 @@ def get_report(report_id: str) -> dict[str, object]:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, str | bool]:
+    if DB_READY:
+        return {"status": "ok", "db_ready": True}
+    return {
+        "status": "degraded",
+        "db_ready": False,
+        "db_error": DB_INIT_ERROR or "database initialization failed",
+    }
