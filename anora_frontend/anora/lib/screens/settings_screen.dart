@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../screens/share_report_screen.dart';
 import '../services/auth_service.dart';
+import '../services/secure_link_service.dart';
 import '../services/storage_service.dart';
 import '../state/settings_controller.dart';
 
@@ -17,6 +18,23 @@ class SettingsScreen extends ConsumerStatefulWidget {
 }
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
+  late final TextEditingController _clinicianIdController;
+  bool _isLinking = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _clinicianIdController = TextEditingController(
+      text: SecureLinkService.instance.linkedClinicianId ?? '',
+    );
+  }
+
+  @override
+  void dispose() {
+    _clinicianIdController.dispose();
+    super.dispose();
+  }
+
   Future<void> _showEraseDialog() async {
     await showModalBottomSheet<void>(
       context: context,
@@ -37,7 +55,55 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _showExportPlaceholder() async {
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Encrypted export is coming soon.')),
+      const SnackBar(content: Text('Private export is coming soon.')),
+    );
+  }
+
+  Future<void> _showLinkClinicianDialog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Private Connection'),
+        content: TextField(
+          controller: _clinicianIdController,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Clinician ID',
+            hintText: 'Enter clinician ID',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: _isLinking ? null : () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: _isLinking
+                ? null
+                : () async {
+                    final id = _clinicianIdController.text.trim();
+                    if (id.isEmpty) return;
+                    setState(() => _isLinking = true);
+                    final ok = await SecureLinkService.instance.linkClinician(id);
+                    if (!mounted) return;
+                    setState(() => _isLinking = false);
+                    if (ctx.mounted) {
+                      Navigator.of(ctx).pop();
+                    }
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          ok
+                              ? 'Securely linked to your clinician.'
+                              : 'Could not link right now. Check the clinician ID and try again.',
+                        ),
+                      ),
+                    );
+                  },
+            child: Text(_isLinking ? 'Linking...' : 'Link'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -45,6 +111,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsControllerProvider);
     final controller = ref.read(settingsControllerProvider.notifier);
+    final linkedClinicianId = SecureLinkService.instance.linkedClinicianId;
 
     return SafeArea(
       child: ListView(
@@ -118,7 +185,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
               const Divider(),
               _SettingRow(
-                title: 'Share encrypted report',
+                title: linkedClinicianId == null ? 'Private Connection' : 'Securely Linked',
+                subtitle: linkedClinicianId == null
+                    ? 'Link your clinician by ID.'
+                    : 'Connected to clinician ID: $linkedClinicianId',
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: _showLinkClinicianDialog,
+              ),
+              const Divider(),
+              _SettingRow(
+                title: 'Share private summary',
                 subtitle: 'Send a privacy-preserving summary to your clinician.',
                 trailing: const Icon(Icons.chevron_right_rounded),
                 onTap: () => Navigator.push(
@@ -166,8 +242,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             title: 'Storage',
             children: [
               _SettingRow(
-                title: 'Export encrypted backup',
-                subtitle: 'Save a local encrypted file to your device.',
+                title: 'Export private backup',
+                subtitle: 'Save a protected local file to your device.',
                 trailing: const Icon(Icons.chevron_right_rounded),
                 onTap: _showExportPlaceholder,
               ),
@@ -319,7 +395,7 @@ class _EraseSheet extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             'This permanently removes every journal entry stored on this device. '
-            'Your encryption key is destroyed, so the data cannot be recovered.',
+            'Your secure local vault is removed, so the data cannot be recovered.',
             style: Theme.of(context).textTheme.bodyMedium,
           ),
           const SizedBox(height: 18),
@@ -329,7 +405,7 @@ class _EraseSheet extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Text(
-            'Tip: Export an encrypted backup first if you might want to restore later.',
+            'Tip: Export a private backup first if you might want to restore later.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ],

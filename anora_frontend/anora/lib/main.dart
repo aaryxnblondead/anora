@@ -7,16 +7,41 @@ import 'screens/journal_screen.dart';
 import 'screens/settings_screen.dart';
 import 'onboarding/onboarding_gate.dart';
 import 'services/ai_inference_service.dart';
+import 'services/clinician_push_service.dart';
 import 'services/storage_service.dart';
 import 'services/tokenizer_service.dart';
-import 'widgets/app_lock_gate.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await StorageService.instance.init();
-  await TokenizerService.instance.init();
-  await AiInferenceService.instance.init();
-  runApp(const ProviderScope(child: AnoraApp()));
+  
+  try {
+    await StorageService.instance.init();
+    await TokenizerService.instance.init();
+    await AiInferenceService.instance.init();
+    await ClinicianPushService.instance.ensureFirebaseInitialized();
+    
+    runApp(const ProviderScope(child: AnoraApp()));
+  } catch (e, stackTrace) {
+    // If anything fails during boot, catch it and show a red error screen
+    // instead of silently crashing the entire app.
+    runApp(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        home: Scaffold(
+          backgroundColor: Colors.black,
+          body: SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                'FATAL BOOT ERROR:\n\n$e\n\n$stackTrace',
+                style: const TextStyle(color: Colors.redAccent, fontFamily: 'monospace'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class AnoraApp extends StatelessWidget {
@@ -169,4 +194,3 @@ class _NavTab {
   final String label;
   final IconData icon;
 }
-

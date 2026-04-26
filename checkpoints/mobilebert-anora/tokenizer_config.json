@@ -41,12 +41,10 @@
       "special": true
     }
   },
-  "backend": "tokenizers",
   "clean_up_tokenization_spaces": false,
   "cls_token": "[CLS]",
   "do_lower_case": true,
   "extra_special_tokens": {},
-  "is_local": false,
   "mask_token": "[MASK]",
   "max_length": 128,
   "model_max_length": 512,

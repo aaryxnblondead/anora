@@ -55,8 +55,12 @@ for text, expected in test_cases:
         return_tensors="np",
     )
 
-    interpreter.set_tensor(input_details[0]["index"], encoded["input_ids"].astype(np.int32))
-    interpreter.set_tensor(input_details[1]["index"], encoded["attention_mask"].astype(np.int32))
+    # Dynamically find the correct index for each input by name
+    input_ids_idx = next(i["index"] for i in input_details if "input_ids" in i["name"])
+    mask_idx = next(i["index"] for i in input_details if "attention_mask" in i["name"])
+
+    interpreter.set_tensor(input_ids_idx, encoded["input_ids"].astype(np.int32))
+    interpreter.set_tensor(mask_idx, encoded["attention_mask"].astype(np.int32))
     interpreter.invoke()
 
     logits = interpreter.get_tensor(output_details[0]["index"])[0]

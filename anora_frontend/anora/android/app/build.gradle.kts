@@ -47,3 +47,8 @@ androidResources {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // Adds the Flex Delegate so tflite_flutter can execute SELECT_TF_OPS
+    implementation("org.tensorflow:tensorflow-lite-select-tf-ops:+")
+}

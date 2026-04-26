@@ -11,8 +11,8 @@ import tensorflow as tf
 SCRIPT_DIR = Path(__file__).resolve().parent
 ONNX_PATH = SCRIPT_DIR / "mobilebert_anora.onnx"
 TFLITE_OUTPUT = SCRIPT_DIR / "mobilebert_quant.tflite"
-FLUTTER_ASSET = SCRIPT_DIR.parent.parent / "anora_frontend" / "anora" / "assets" / "models" / "mentalbert_quant.tflite"
-AUTO_REPLACEMENT_JSON = SCRIPT_DIR / "mentalbert_anora_auto.json"
+FLUTTER_ASSET = SCRIPT_DIR.parent.parent / "anora_frontend" / "anora" / "assets" / "models" / "mobilebert_quant.tflite"
+AUTO_REPLACEMENT_JSON = SCRIPT_DIR / "mobilebert_anora_auto.json"
 CHECKPOINT = (SCRIPT_DIR.parent.parent / "checkpoints" / "mobilebert-anora").as_posix()
 MAX_LEN = 128
 

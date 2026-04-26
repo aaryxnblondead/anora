@@ -180,6 +180,36 @@ class ReportService {
     return reportId;
   }
 
+  /// Syncs ONLY the mood and risk indicators of a single entry. 
+  /// The actual journal text is strictly omitted for patient privacy.
+  Future<void> syncMoodTelemetry({
+    required JournalEntry entry,
+    required String clinicianId,
+    required String clinicianPublicKeyPem,
+  }) async {
+    // 1. Create the stripped-down payload (NO TEXT INCLUDED)
+    final telemetryPayload = <String, dynamic>{
+      'type': 'live_telemetry',
+      'entry_id': entry.id,
+      'timestamp': entry.timestamp.toUtc().toIso8601String(),
+      'mood_score': entry.moodScore,
+      'mood_path': entry.moodPath,
+      'risk_flags': entry.riskFlags,
+    };
+
+    // 2. Encrypt it using your existing secure RSA/AES pipeline
+    final lockedBox = buildLockedBox(
+      summary: telemetryPayload, 
+      clinicianPublicKeyPem: clinicianPublicKeyPem,
+    );
+
+    // 3. Silently upload to the clinician's dashboard
+    await uploadLockedBox(
+      lockedBox: lockedBox,
+      clinicianId: clinicianId,
+    );
+  }
+
   List<Map<String, dynamic>> _buildRiskFlagTrend(
     List<JournalEntry> entries,
     DateTime fromUtc,

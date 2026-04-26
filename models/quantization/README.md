@@ -1,19 +1,19 @@
-# MentalBERT Quantization Pipeline
+# MobileBERT Quantization Pipeline
 
-This folder contains the scripts used to fine-tune MentalBERT, export it to ONNX, convert it to TensorFlow SavedModel, and quantize it to an INT8 TFLite artifact for Anora.
+This folder contains the scripts used to fine-tune MobileBERT, export it to ONNX, convert it to TensorFlow SavedModel, and quantize it to an INT8 TFLite artifact for Anora.
 
 ## Layout
 
 - `train.py` fine-tunes the classifier.
 - `export_onnx.py` exports the trained checkpoint to ONNX.
-- `quantize.py` converts ONNX to SavedModel and then to `mentalbert_quant.tflite`.
+- `quantize.py` converts ONNX to SavedModel and then to `mobilebert_quant.tflite`.
 - `validate.py` runs a quick TFLite sanity check before you copy the model into Flutter.
 
 ## Expected output
 
 The final mobile artifact should be written to:
 
-- `anora_frontend/anora/assets/models/mentalbert_quant.tflite`
+- `anora_frontend/anora/assets/models/mobilebert_quant.tflite`
 
 ## Notes
 

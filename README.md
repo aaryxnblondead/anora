@@ -220,6 +220,30 @@ This flow utilizes Hybrid Encryption (PGP-style logic) to allow doctors to see d
 *   **Transport:** The "Locked Box" is sent to the Blind Mailman API. The server sees only a blob of bytes. It cannot read the contents.
 *   **Decryption:** The doctor's device uses their Private Key (stored only on their device/YubiKey) to unlock the AES key, then unlocks the clinical data.
 
+## Appwrite Backend Deployment
+
+The backend runs as a FastAPI service backed by PostgreSQL, while emergency push delivery is delegated to an Appwrite Function execution. This preserves existing API behavior and keeps encrypted payload handling server-side.
+
+### Production layout
+
+*   `backend/Dockerfile` listens on the platform `PORT` and runs as a non-root user.
+*   PostgreSQL should be provided by a managed Postgres instance with TLS and least-privilege credentials.
+*   Emergency notifications call an Appwrite Function (`APPWRITE_PUSH_FUNCTION_ID`) with signed server credentials.
+
+### Required environment variables
+
+*   `DATABASE_URL` for the managed Postgres instance.
+*   `ALLOWED_ORIGINS` listing trusted frontend origins.
+*   `PUSH_PROVIDER=appwrite`.
+*   `APPWRITE_ENDPOINT`, `APPWRITE_PROJECT_ID`, `APPWRITE_API_KEY`, `APPWRITE_PUSH_FUNCTION_ID`.
+
+### Deployment steps
+
+1. Deploy PostgreSQL and set `DATABASE_URL`.
+2. Create an Appwrite Function that accepts emergency payloads and dispatches push notifications to registered clinician devices.
+3. Configure backend environment variables with Appwrite endpoint, project ID, server API key, and function ID.
+4. Deploy the backend container and point the Flutter app's `API_BASE_URL` at that backend domain.
+
 ### C. The Learning Loop (Federated Learning)
 
 This flow ensures the AI improves without centralizing user data.

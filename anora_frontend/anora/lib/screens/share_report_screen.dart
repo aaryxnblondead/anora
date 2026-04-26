@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../services/crypto_service.dart';
 import '../services/report_service.dart';
+import '../services/secure_link_service.dart';
 
 enum _ScreenState {
   idle,
@@ -25,8 +26,6 @@ class ShareReportScreen extends ConsumerStatefulWidget {
 class _ShareReportScreenState extends ConsumerState<ShareReportScreen> {
   late DateTime _fromDate;
   late DateTime _toDate;
-  final TextEditingController _clinicianIdController = TextEditingController();
-  final TextEditingController _publicKeyController = TextEditingController();
 
   _ScreenState _state = _ScreenState.idle;
   Map<String, dynamic>? _previewSummary;
@@ -48,8 +47,6 @@ class _ShareReportScreenState extends ConsumerState<ShareReportScreen> {
 
   @override
   void dispose() {
-    _clinicianIdController.dispose();
-    _publicKeyController.dispose();
     super.dispose();
   }
 
@@ -113,13 +110,12 @@ class _ShareReportScreenState extends ConsumerState<ShareReportScreen> {
     final summary = _previewSummary;
     if (summary == null) return;
 
-    final clinicianId = _clinicianIdController.text.trim();
-    final publicKeyPem = _publicKeyController.text.trim();
-
-    if (clinicianId.isEmpty || publicKeyPem.isEmpty) {
+    final clinicianId = SecureLinkService.instance.linkedClinicianId;
+    final clinicianPublicKey = SecureLinkService.instance.linkedClinicianPublicKeyPem;
+    if (clinicianId == null || clinicianPublicKey == null) {
       setState(() {
         _state = _ScreenState.error;
-        _errorMessage = 'Please enter both clinician ID and public key PEM.';
+        _errorMessage = 'Link a clinician first from Settings > Private Connection.';
       });
       return;
     }
@@ -132,7 +128,7 @@ class _ShareReportScreenState extends ConsumerState<ShareReportScreen> {
 
       final lockedBox = ReportService.instance.buildLockedBox(
         summary: summary,
-        clinicianPublicKeyPem: publicKeyPem,
+        clinicianPublicKeyPem: clinicianPublicKey,
       );
 
       setState(() {
@@ -189,7 +185,7 @@ class _ShareReportScreenState extends ConsumerState<ShareReportScreen> {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'Encrypted report sent',
+                  'Private report sent',
                   style: Theme.of(context).textTheme.headlineMedium,
                   textAlign: TextAlign.center,
                 ),
@@ -244,26 +240,10 @@ class _ShareReportScreenState extends ConsumerState<ShareReportScreen> {
               ),
               const SizedBox(height: 20),
               Text(
-                'Clinician ID',
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _clinicianIdController,
-                enabled: !_isBusy,
-                decoration: const InputDecoration(
-                  hintText: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _publicKeyController,
-                enabled: !_isBusy,
-                minLines: 6,
-                maxLines: 6,
-                decoration: const InputDecoration(
-                  hintText: "Paste your clinician's public key here",
-                ),
+                SecureLinkService.instance.linkedClinicianId == null
+                    ? 'No private connection yet'
+                    : 'Securely linked to clinician: ${SecureLinkService.instance.linkedClinicianId}',
+                style: Theme.of(context).textTheme.bodyMedium,
               ),
               const SizedBox(height: 20),
               if (_previewSummary != null) ...[
@@ -303,7 +283,7 @@ class _ShareReportScreenState extends ConsumerState<ShareReportScreen> {
                       onPressed: (_isBusy || _previewSummary == null)
                           ? null
                           : _encryptAndSend,
-                      child: const Text('Encrypt & Send'),
+                      child: const Text('Send Securely'),
                     ),
                   ),
                 ],

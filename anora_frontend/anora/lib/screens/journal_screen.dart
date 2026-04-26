@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/journal_entry.dart';
 import '../services/ai_inference_service.dart';
+import '../services/secure_link_service.dart';
 import '../services/storage_service.dart';
 import '../state/settings_controller.dart';
 import '../widgets/feelings_wheel.dart';
@@ -25,15 +29,151 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
   final FocusNode _focusNode = FocusNode();
   final ScrollController _scrollController = ScrollController();
   final GlobalKey _textFieldKey = GlobalKey();
+
   bool _isSaving = false;
   String? _lastDominantEmotion;
+  JournalEntry? _lastSavedEntry;
+
+  Timer? _debounce;
+  bool _isAiAnalyzingLive = false;
+  bool _hasTriggeredCrisisModal = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_onTextChanged);
+  }
 
   @override
   void dispose() {
+    _debounce?.cancel();
+    _controller.removeListener(_onTextChanged);
     _controller.dispose();
     _focusNode.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _onTextChanged() {
+    if (_debounce?.isActive ?? false) {
+      _debounce!.cancel();
+    }
+
+    if (_controller.text.trim().isEmpty) {
+      if (mounted) {
+        setState(() => _isAiAnalyzingLive = false);
+      }
+      return;
+    }
+
+    if (mounted) {
+      setState(() => _isAiAnalyzingLive = true);
+    }
+
+    _debounce = Timer(const Duration(milliseconds: 800), () async {
+      final text = _controller.text.trim();
+      if (text.isEmpty) return;
+
+      try {
+        final aiResult = await AiInferenceService.instance.analyze(text);
+
+        if (!mounted) return;
+        setState(() {
+          _isAiAnalyzingLive = false;
+          if (ref.read(_moodPathProvider).length <= 1) {
+            _lastDominantEmotion = aiResult.dominantEmotion;
+          }
+        });
+
+        await _checkCrisisProtocol(text: text, riskFlags: aiResult.riskFlags);
+      } catch (_) {
+        if (mounted) {
+          setState(() => _isAiAnalyzingLive = false);
+        }
+      }
+    });
+  }
+
+  Future<void> _checkCrisisProtocol({
+    required String text,
+    required List<String> riskFlags,
+  }) async {
+    if (_hasTriggeredCrisisModal) return;
+
+    final normalizedFlags = riskFlags.map((flag) => flag.toLowerCase()).toSet();
+    const criticalRiskAliases = <String>{
+      'risk_selfharm',
+      'risk_depression',
+      'risk_mania',
+      'self-harm',
+      'depression',
+      'mania',
+    };
+
+    final lowerText = text.toLowerCase();
+    final phraseHit = lowerText.contains('killing myself') ||
+        lowerText.contains('end my life') ||
+        lowerText.contains('suicide') ||
+        lowerText.contains('want to die') ||
+        lowerText.contains('hurt myself');
+
+    final isCritical = normalizedFlags.any(criticalRiskAliases.contains) || phraseHit;
+    if (!isCritical) return;
+
+    _hasTriggeredCrisisModal = true;
+    _focusNode.unfocus();
+
+    await SecureLinkService.instance.sendEmergencyAlert(
+      triggerText: text,
+      riskFlags: riskFlags,
+      source: 'journal_live_typing',
+    );
+
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.health_and_safety, color: Colors.redAccent),
+            SizedBox(width: 8),
+            Expanded(child: Text('We are here for you')),
+          ],
+        ),
+        content: const Text(
+          'Your writing indicates you might be in distress. You are not alone, and help is available right now.',
+          style: TextStyle(fontSize: 16),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              Future<void>.delayed(const Duration(minutes: 5), () {
+                _hasTriggeredCrisisModal = false;
+              });
+            },
+            child: const Text(
+              "I'm safe, continue journaling",
+              style: TextStyle(color: Colors.grey),
+            ),
+          ),
+          FilledButton.icon(
+            onPressed: () async {
+              final uri = Uri(scheme: 'tel', path: '988');
+              await launchUrl(uri);
+              if (ctx.mounted) {
+                Navigator.pop(ctx);
+              }
+            },
+            icon: const Icon(Icons.phone),
+            label: const Text('Call 988'),
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+          ),
+        ],
+      ),
+    );
   }
 
   void _scrollToComposer() {
@@ -64,10 +204,10 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
       final moodScore = ref.read(_moodScoreProvider);
       final moodPath = ref.read(_moodPathProvider);
       final settings = ref.read(settingsControllerProvider);
+
       final aiResult = await AiInferenceService.instance.analyze(text);
-      final blendedMoodScore = (
-        (moodScore * 0.6) + (aiResult.sentimentScore * 0.4)
-      ).clamp(0.0, 1.0);
+      final blendedMoodScore = ((moodScore * 0.6) + (aiResult.sentimentScore * 0.4)).clamp(0.0, 1.0);
+
       final entry = JournalEntry(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
         text: text,
@@ -78,13 +218,18 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
       );
 
       await StorageService.instance.journalBox.add(entry);
+      await SecureLinkService.instance.syncMoodTelemetry(entry: entry);
+
       if (settings.hapticsEnabled) {
         await HapticFeedback.mediumImpact();
       }
 
       if (mounted) {
         setState(() {
-          _lastDominantEmotion = moodPath.length <= 1 ? aiResult.dominantEmotion : null;
+          _lastSavedEntry = entry;
+          if (moodPath.length <= 1) {
+            _lastDominantEmotion = aiResult.dominantEmotion;
+          }
         });
       }
 
@@ -107,6 +252,25 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
         setState(() => _isSaving = false);
       }
     }
+  }
+
+  Future<void> _shareLastEntryContent() async {
+    final entry = _lastSavedEntry;
+    if (entry == null) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    final success = await SecureLinkService.instance.shareEntryContent(entry: entry);
+
+    if (!mounted) return;
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          success
+              ? 'Entry content shared through your private connection.'
+              : 'Connect to a clinician first in Settings to share entry content.',
+        ),
+      ),
+    );
   }
 
   @override
@@ -150,9 +314,58 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
                 ),
               const SizedBox(height: 18),
               if (shouldPrompt)
-                Text(
-                  'Why do you feel $selectedFeeling?',
-                  style: Theme.of(context).textTheme.titleLarge,
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Why do you feel $selectedFeeling?',
+                        style: Theme.of(context).textTheme.titleLarge,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    Tooltip(
+                      message: 'On-device AI is analyzing text locally for your privacy.',
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: _isAiAnalyzingLive
+                              ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.1)
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (_isAiAnalyzingLive) ...[
+                              SizedBox(
+                                width: 10,
+                                height: 10,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Theme.of(context).colorScheme.primary,
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                            ] else ...[
+                              Icon(Icons.memory, size: 14, color: Colors.grey.shade600),
+                              const SizedBox(width: 4),
+                            ],
+                            Text(
+                              _isAiAnalyzingLive ? 'Analyzing...' : 'Edge AI Active',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: _isAiAnalyzingLive
+                                    ? Theme.of(context).colorScheme.primary
+                                    : Colors.grey.shade600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               if (shouldPrompt) const SizedBox(height: 12),
               if (shouldPrompt && _lastDominantEmotion != null && moodPath.length <= 1) ...[
@@ -173,9 +386,7 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
                 onTapOutside: (_) => FocusScope.of(context).unfocus(),
                 onEditingComplete: _scrollToComposer,
                 decoration: InputDecoration(
-                  hintText: shouldPrompt
-                      ? 'Write a few words...'
-                      : 'Select a feeling to begin.',
+                  hintText: shouldPrompt ? 'Write a few words...' : 'Select a feeling to begin.',
                 ),
               ),
               const SizedBox(height: 16),
@@ -192,6 +403,17 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
                       : const Text('Save to Secure Vault'),
                 ),
               ),
+              if (_lastSavedEntry != null) ...[
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _shareLastEntryContent,
+                    icon: const Icon(Icons.share_rounded),
+                    label: const Text('Share Entry Content'),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -199,4 +421,3 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
     );
   }
 }
-

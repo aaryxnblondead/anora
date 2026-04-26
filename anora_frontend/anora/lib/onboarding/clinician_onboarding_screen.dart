@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../services/clinician_crypto_service.dart';
+import '../services/secure_link_service.dart';
 import '../services/storage_service.dart';
 
 class ClinicianOnboardingScreen extends StatefulWidget {
@@ -80,7 +81,7 @@ class _ClinicianOnboardingScreenState extends State<ClinicianOnboardingScreen> {
       if (!mounted) return;
       setState(() => _publicKeyPem = ClinicianCryptoService.instance.getPublicKeyPem());
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('RSA keypair generated and stored securely.')),
+        const SnackBar(content: Text('Private connection credentials prepared.')),
       );
     } catch (error) {
       if (!mounted) return;
@@ -103,7 +104,7 @@ class _ClinicianOnboardingScreenState extends State<ClinicianOnboardingScreen> {
       if (!mounted) return;
       setState(() => _publicKeyPem = ClinicianCryptoService.instance.getPublicKeyPem());
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Private key imported and validated.')),
+        const SnackBar(content: Text('Connection credentials imported successfully.')),
       );
     } catch (error) {
       if (!mounted) return;
@@ -137,6 +138,18 @@ class _ClinicianOnboardingScreenState extends State<ClinicianOnboardingScreen> {
 
   Future<void> _completeOnboarding() async {
     try {
+      final clinicianId = _clinicianId;
+      final publicKeyPem = _publicKeyPem;
+      if (clinicianId != null && clinicianId.isNotEmpty && publicKeyPem != null) {
+        try {
+          await SecureLinkService.instance.registerClinicianConnection(
+            clinicianId: clinicianId,
+            publicKeyPem: publicKeyPem,
+          );
+        } catch (_) {
+          // Keep onboarding non-blocking if backend registration is temporarily unavailable.
+        }
+      }
       await StorageService.instance.settingsBox.put('clinician_onboarding_complete', true);
     } catch (error) {
       if (!mounted) return;
@@ -187,11 +200,12 @@ class _ClinicianOnboardingScreenState extends State<ClinicianOnboardingScreen> {
                   _ClinicianIdStep(
                     clinicianId: _clinicianId,
                     onCopy: () async {
+                      final messenger = ScaffoldMessenger.of(context);
                       final id = _clinicianId;
                       if (id == null || id.isEmpty) return;
                       await Clipboard.setData(ClipboardData(text: id));
                       if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
+                      messenger.showSnackBar(
                         const SnackBar(content: Text('Clinician ID copied.')),
                       );
                     },
@@ -320,15 +334,15 @@ class _KeyStep extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('Your Encryption Keys', style: theme.textTheme.headlineMedium),
+          Text('Private Connection Setup', style: theme.textTheme.headlineMedium),
           const SizedBox(height: 8),
           Text(
-            'Secure your reports',
+            'Prepare secure sharing',
             style: theme.textTheme.titleLarge,
           ),
           const SizedBox(height: 6),
           Text(
-            'Anora uses RSA-2048 to encrypt patient summaries only you can read.',
+            'Anora handles secure handshakes in the background so sharing stays private.',
             style: theme.textTheme.bodyMedium,
           ),
           const SizedBox(height: 16),
@@ -336,18 +350,18 @@ class _KeyStep extends StatelessWidget {
             title: 'Generate on device',
             child: FilledButton(
               onPressed: isBusy ? null : onGenerate,
-              child: Text(isBusy ? 'Working...' : 'Generate RSA Keypair'),
+              child: Text(isBusy ? 'Working...' : 'Prepare Private Connection'),
             ),
           ),
           const SizedBox(height: 12),
           _OptionCard(
-            title: 'Import existing',
+            title: 'Import recovery credentials',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 OutlinedButton(
                   onPressed: isBusy ? null : onImportToggle,
-                  child: const Text('Import Private Key'),
+                  child: const Text('Import Recovery File'),
                 ),
                 if (showImportField) ...[
                   const SizedBox(height: 8),
@@ -356,13 +370,13 @@ class _KeyStep extends StatelessWidget {
                     minLines: 8,
                     maxLines: 8,
                     decoration: const InputDecoration(
-                      hintText: 'Paste private key PEM here',
+                      hintText: 'Paste recovery credentials here',
                     ),
                   ),
                   const SizedBox(height: 8),
                   FilledButton.tonal(
                     onPressed: isBusy ? null : onImport,
-                    child: const Text('Validate and Store'),
+                    child: const Text('Validate and Save'),
                   ),
                 ],
               ],
@@ -386,33 +400,14 @@ class _KeyStep extends StatelessWidget {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'Keypair generated and stored securely.',
+                          'Private connection is ready.',
                           style: theme.textTheme.bodyMedium,
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 10),
-                  Text('Your Public Key', style: theme.textTheme.labelLarge),
-                  const SizedBox(height: 6),
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Text(publicKeyPem!, style: theme.textTheme.bodySmall),
-                  ),
-                  const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    onPressed: () async {
-                      final messenger = ScaffoldMessenger.of(context);
-                      await Clipboard.setData(ClipboardData(text: publicKeyPem!));
-                      messenger.showSnackBar(
-                        const SnackBar(content: Text('Public key copied.')),
-                      );
-                    },
-                    icon: const Icon(Icons.copy_rounded),
-                    label: const Text('Copy Public Key'),
-                  ),
                   Text(
-                    'Share this with your patients so they can encrypt reports for you.',
+                    'Patients can now securely link using your Clinician ID.',
                     style: theme.textTheme.bodySmall,
                   ),
                 ],
@@ -453,7 +448,7 @@ class _ClinicianIdStep extends StatelessWidget {
           Text('Your unique ID', style: theme.textTheme.titleLarge),
           const SizedBox(height: 6),
           Text(
-            'Patients use this ID when sending you encrypted reports.',
+            'Patients use this ID to securely link and share updates.',
             style: theme.textTheme.bodyMedium,
           ),
           const SizedBox(height: 16),
@@ -481,7 +476,7 @@ class _ClinicianIdStep extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           Text(
-            'This ID does not identify you to the server. It is just a routing label for encrypted blobs.',
+            'This ID helps route private updates to your dashboard.',
             style: theme.textTheme.bodySmall,
           ),
           const Spacer(),
@@ -510,7 +505,7 @@ class _ReadyStep extends StatelessWidget {
           Icon(Icons.verified_rounded, size: 64, color: theme.colorScheme.primary),
           const SizedBox(height: 14),
           _ReadyItem(text: 'Profile stored locally'),
-          _ReadyItem(text: 'RSA keypair generated'),
+          _ReadyItem(text: 'Private connection prepared'),
           _ReadyItem(text: 'Clinician ID ready'),
           const Spacer(),
           FilledButton(

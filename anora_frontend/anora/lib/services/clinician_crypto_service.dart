@@ -24,6 +24,7 @@ class ClinicianCryptoService {
 
   static const _privateKeyStorageKey = 'clinician_private_key_pem';
   static const _publicKeyStorageKey = 'clinician_public_key_pem';
+  static const _rsaEncryptionOid = '1.2.840.113549.1.1.1';
 
   Future<void> generateAndStoreKeypair() async {
     try {
@@ -196,7 +197,7 @@ class ClinicianCryptoService {
       ..add(ASN1Integer(qInv));
 
     final algorithmIdentifier = ASN1Sequence()
-      ..add(ASN1ObjectIdentifier.fromName('rsaEncryption'))
+      ..add(ASN1ObjectIdentifier.fromComponentString(_rsaEncryptionOid))
       ..add(ASN1Null());
 
     final pkcs8 = ASN1Sequence()
@@ -222,7 +223,7 @@ class ClinicianCryptoService {
       ..add(ASN1Integer(exponent));
 
     final algorithmIdentifier = ASN1Sequence()
-      ..add(ASN1ObjectIdentifier.fromName('rsaEncryption'))
+      ..add(ASN1ObjectIdentifier.fromComponentString(_rsaEncryptionOid))
       ..add(ASN1Null());
 
     final spki = ASN1Sequence()

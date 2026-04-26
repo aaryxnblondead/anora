@@ -50,10 +50,24 @@ class AiInferenceService {
     }
 
     await TokenizerService.instance.init();
-    _interpreter = await Interpreter.fromAsset(
-      _modelAssetPath,
-      options: InterpreterOptions()..threads = threads,
-    );
+    try {
+      _interpreter = await Interpreter.fromAsset(
+        _modelAssetPath,
+        options: InterpreterOptions()..threads = threads,
+      );
+      return;
+    } catch (threadedError) {
+      // Some devices fail interpreter construction with custom thread settings.
+      try {
+        _interpreter = await Interpreter.fromAsset(_modelAssetPath);
+        return;
+      } catch (fallbackError) {
+        throw StateError(
+          'Failed to initialize TFLite interpreter for $_modelAssetPath. '
+          'threadedError=$threadedError; fallbackError=$fallbackError',
+        );
+      }
+    }
   }
 
   Future<AiInferenceResult> analyze(String text) async {
@@ -70,8 +84,8 @@ class AiInferenceService {
 
     interpreter.runForMultipleInputs(
       [
-        [encoding.inputIds],
         [encoding.attentionMask],
+        [encoding.inputIds],
       ],
       output,
     );

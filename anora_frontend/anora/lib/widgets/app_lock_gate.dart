@@ -18,6 +18,7 @@ class _AppLockGateState extends ConsumerState<AppLockGate>
   bool _locked = false;
   bool _checking = false;
   bool _initialized = false;
+  bool _lockOnNextResume = false;
 
   @override
   void initState() {
@@ -42,7 +43,22 @@ class _AppLockGateState extends ConsumerState<AppLockGate>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    // local_auth can trigger transient lifecycle changes while the prompt is open.
+    // Ignore those transitions so a successful auth is not immediately overwritten.
+    if (_checking) {
+      return;
+    }
+
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused) {
+      final settings = ref.read(settingsControllerProvider);
+      _lockOnNextResume = settings.biometricsEnabled && settings.autoLockEnabled;
+      return;
+    }
+
+    if (state == AppLifecycleState.resumed && _lockOnNextResume) {
+      _lockOnNextResume = false;
       _evaluateLockState(requireAuth: false);
     }
   }
@@ -67,15 +83,27 @@ class _AppLockGateState extends ConsumerState<AppLockGate>
     if (_checking) return;
     setState(() => _checking = true);
 
-    final success = await AuthService.instance.authenticate(
-      reason: 'Unlock Anora to continue your private journal.',
-    );
+    try {
+      final success = await AuthService.instance.authenticate(
+        reason: 'Unlock Anora to continue your private journal.',
+      );
 
-    if (mounted) {
+      if (!mounted) {
+        return;
+      }
+
       setState(() {
         _checking = false;
         _locked = !success;
+        if (success) {
+          _lockOnNextResume = false;
+        }
       });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() => _checking = false);
     }
   }
 
