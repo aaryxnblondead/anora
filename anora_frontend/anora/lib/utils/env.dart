@@ -9,6 +9,10 @@ class Env {
     'CLOUD_API_BASE_URL',
     defaultValue: 'https://xydctnf6j6.us-east-1.awsapprunner.com',
   );
+  static const String _backupCloudApiBaseUrl = String.fromEnvironment(
+    'CLOUD_API_BASE_URL_BACKUP',
+    defaultValue: '',
+  );
 
   static const String awsRegion = String.fromEnvironment(
     'AWS_REGION',
@@ -43,6 +47,19 @@ class Env {
       return 'http://localhost:8000';
     }
     return _normalize(_cloudFallbackApiBaseUrl);
+  }
+
+  static String? get backupApiBaseUrl {
+    final raw = _backupCloudApiBaseUrl.trim();
+    if (raw.isEmpty) {
+      return null;
+    }
+    final normalized = _normalize(raw);
+    final parsed = Uri.tryParse(normalized);
+    if (parsed == null || parsed.host.trim().isEmpty) {
+      return null;
+    }
+    return normalized;
   }
 
   static String _normalize(String url) {

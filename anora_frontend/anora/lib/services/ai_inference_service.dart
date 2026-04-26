@@ -112,7 +112,18 @@ class AiInferenceService {
       }
     }
 
-    final sentimentScore = _deriveSentimentScore(probabilities);
+    var sentimentScore = _deriveSentimentScore(probabilities);
+
+    // Safety override: explicit self-harm language should never be interpreted as safe.
+    if (_containsCriticalSelfHarmPhrase(text)) {
+      if (!riskFlags.contains('Self-harm')) {
+        riskFlags.insert(0, 'Self-harm');
+      }
+      if (!riskFlags.contains('Depression')) {
+        riskFlags.add('Depression');
+      }
+      sentimentScore = sentimentScore.clamp(0.0, 0.15);
+    }
 
     return AiInferenceResult(
       sentimentScore: sentimentScore,
@@ -167,6 +178,16 @@ class AiInferenceService {
     final negative = probabilities[1] + probabilities[2] + probabilities[3] + probabilities[4];
     final score = 0.5 + ((positive - negative) * 0.5);
     return score.clamp(0.0, 1.0);
+  }
+
+  bool _containsCriticalSelfHarmPhrase(String text) {
+    final lowerText = text.toLowerCase();
+    return lowerText.contains('killing myself') ||
+        lowerText.contains('end my life') ||
+        lowerText.contains('suicide') ||
+        lowerText.contains('want to die') ||
+        lowerText.contains('ready to die') ||
+        lowerText.contains('hurt myself');
   }
 }
 

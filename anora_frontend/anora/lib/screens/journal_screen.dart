@@ -38,6 +38,15 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
   bool _isAiAnalyzingLive = false;
   bool _hasTriggeredCrisisModal = false;
 
+  static const Set<String> _criticalRiskAliases = <String>{
+    'risk_selfharm',
+    'risk_depression',
+    'risk_mania',
+    'self-harm',
+    'depression',
+    'mania',
+  };
+
   @override
   void initState() {
     super.initState();
@@ -70,7 +79,7 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
       setState(() => _isAiAnalyzingLive = true);
     }
 
-    _debounce = Timer(const Duration(milliseconds: 800), () async {
+    _debounce = Timer(const Duration(milliseconds: 1000), () async {
       final text = _controller.text.trim();
       if (text.isEmpty) return;
 
@@ -101,23 +110,8 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
     if (_hasTriggeredCrisisModal) return;
 
     final normalizedFlags = riskFlags.map((flag) => flag.toLowerCase()).toSet();
-    const criticalRiskAliases = <String>{
-      'risk_selfharm',
-      'risk_depression',
-      'risk_mania',
-      'self-harm',
-      'depression',
-      'mania',
-    };
-
-    final lowerText = text.toLowerCase();
-    final phraseHit = lowerText.contains('killing myself') ||
-        lowerText.contains('end my life') ||
-        lowerText.contains('suicide') ||
-        lowerText.contains('want to die') ||
-        lowerText.contains('hurt myself');
-
-    final isCritical = normalizedFlags.any(criticalRiskAliases.contains) || phraseHit;
+    final isCritical = normalizedFlags.any(_criticalRiskAliases.contains) ||
+      _containsCriticalSelfHarmPhrase(text);
     if (!isCritical) return;
 
     _hasTriggeredCrisisModal = true;
@@ -206,7 +200,11 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
       final settings = ref.read(settingsControllerProvider);
 
       final aiResult = await AiInferenceService.instance.analyze(text);
-      final blendedMoodScore = ((moodScore * 0.6) + (aiResult.sentimentScore * 0.4)).clamp(0.0, 1.0);
+      final blendedMoodScore = _deriveSafetyFirstMoodScore(
+        wheelMoodScore: moodScore,
+        text: text,
+        aiResult: aiResult,
+      );
 
       final entry = JournalEntry(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
@@ -252,6 +250,35 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
         setState(() => _isSaving = false);
       }
     }
+  }
+
+  double _deriveSafetyFirstMoodScore({
+    required double wheelMoodScore,
+    required String text,
+    required AiInferenceResult aiResult,
+  }) {
+    final aiDominant = ((aiResult.sentimentScore * 0.85) + (wheelMoodScore * 0.15))
+        .clamp(0.0, 1.0);
+
+    final normalizedFlags = aiResult.riskFlags.map((flag) => flag.toLowerCase()).toSet();
+    final isCritical = normalizedFlags.any(_criticalRiskAliases.contains) ||
+        _containsCriticalSelfHarmPhrase(text);
+
+    if (isCritical) {
+      return aiDominant.clamp(0.0, 0.2);
+    }
+
+    return aiDominant;
+  }
+
+  bool _containsCriticalSelfHarmPhrase(String text) {
+    final lowerText = text.toLowerCase();
+    return lowerText.contains('killing myself') ||
+        lowerText.contains('end my life') ||
+        lowerText.contains('suicide') ||
+        lowerText.contains('want to die') ||
+        lowerText.contains('ready to die') ||
+        lowerText.contains('hurt myself');
   }
 
   Future<void> _shareLastEntryContent() async {

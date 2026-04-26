@@ -14,13 +14,31 @@ class ApiEndpointService {
   static final ApiEndpointService instance = ApiEndpointService._();
 
   static const _overrideKey = 'api_base_url_override';
+  int _currentUrlIndex = 0;
 
-  String get baseUrl {
+  List<String> get _baseUrls {
     final override = overrideBaseUrl;
     if (override != null) {
-      return override;
+      return <String>[override];
     }
-    return _normalize(Env.apiBaseUrl);
+
+    final urls = <String>{_normalize(Env.apiBaseUrl)};
+    final backup = Env.backupApiBaseUrl;
+    if (backup != null && backup.isNotEmpty) {
+      urls.add(_normalize(backup));
+    }
+    return urls.toList(growable: false);
+  }
+
+  String get baseUrl {
+    final urls = _baseUrls;
+    if (urls.isEmpty) {
+      return _normalize(Env.apiBaseUrl);
+    }
+    if (_currentUrlIndex >= urls.length) {
+      _currentUrlIndex = 0;
+    }
+    return urls[_currentUrlIndex];
   }
 
   String? get overrideBaseUrl {
@@ -73,8 +91,24 @@ class ApiEndpointService {
   Future<http.Response> get(
     Uri uri, {
     Duration timeout = const Duration(seconds: 10),
-  }) {
-    return _requestWithRetry(() => http.get(uri).timeout(timeout));
+  }) async {
+    final candidates = _candidateUris(uri);
+    Object? lastError;
+    for (var index = 0; index < candidates.length; index++) {
+      final candidate = candidates[index];
+      try {
+        final response = await _requestWithRetry(() => http.get(candidate).timeout(timeout));
+        _currentUrlIndex = index % _baseUrls.length;
+        return response;
+      } catch (error) {
+        lastError = error;
+        if (!_isHostLookupFailure(error) || candidate == candidates.last) {
+          rethrow;
+        }
+        _rotateBaseUrl();
+      }
+    }
+    throw StateError('Request failed: $lastError');
   }
 
   Future<http.Response> post(
@@ -83,15 +117,31 @@ class ApiEndpointService {
     Object? body,
     Encoding? encoding,
     Duration timeout = const Duration(seconds: 12),
-  }) {
-    return _requestWithRetry(
-      () => http.post(
-        uri,
-        headers: headers,
-        body: body,
-        encoding: encoding,
-      ).timeout(timeout),
-    );
+  }) async {
+    final candidates = _candidateUris(uri);
+    Object? lastError;
+    for (var index = 0; index < candidates.length; index++) {
+      final candidate = candidates[index];
+      try {
+        final response = await _requestWithRetry(
+          () => http.post(
+            candidate,
+            headers: headers,
+            body: body,
+            encoding: encoding,
+          ).timeout(timeout),
+        );
+        _currentUrlIndex = index % _baseUrls.length;
+        return response;
+      } catch (error) {
+        lastError = error;
+        if (!_isHostLookupFailure(error) || candidate == candidates.last) {
+          rethrow;
+        }
+        _rotateBaseUrl();
+      }
+    }
+    throw StateError('Request failed: $lastError');
   }
 
   Future<void> ping({Duration timeout = const Duration(seconds: 8)}) async {
@@ -142,6 +192,53 @@ class ApiEndpointService {
         code == 7 ||
         code == 110 ||
         code == 11;
+  }
+
+  bool _isHostLookupFailure(Object error) {
+    if (error is! SocketException) {
+      return false;
+    }
+    final message = error.message.toLowerCase();
+    final code = error.osError?.errorCode;
+    return message.contains('failed host lookup') || code == 7;
+  }
+
+  List<Uri> _candidateUris(Uri original) {
+    final urls = _baseUrls;
+    if (urls.length <= 1) {
+      return <Uri>[original];
+    }
+
+    final candidateUris = <Uri>[];
+    for (var offset = 0; offset < urls.length; offset++) {
+      final urlIndex = (_currentUrlIndex + offset) % urls.length;
+      final base = Uri.tryParse(urls[urlIndex]);
+      if (base == null || base.host.isEmpty) {
+        continue;
+      }
+      final candidate = Uri(
+        scheme: base.scheme,
+        userInfo: base.userInfo,
+        host: base.host,
+        port: base.hasPort ? base.port : 443,
+        path: original.path,
+        query: original.query,
+        fragment: original.fragment,
+      );
+      if (!candidateUris.any((existing) => existing.toString() == candidate.toString())) {
+        candidateUris.add(candidate);
+      }
+    }
+
+    return candidateUris.isEmpty ? <Uri>[original] : candidateUris;
+  }
+
+  void _rotateBaseUrl() {
+    final urls = _baseUrls;
+    if (urls.length <= 1) {
+      return;
+    }
+    _currentUrlIndex = (_currentUrlIndex + 1) % urls.length;
   }
 
   bool _isSupportedScheme(String scheme) {
