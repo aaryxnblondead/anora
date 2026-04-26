@@ -1,5 +1,5 @@
 module.exports = async ({ req, res, log, error }) => {
-  const message = "Deprecated: emergency alerts now flow through PostgreSQL inbox polling in AWS.";
+  const message = "Deprecated: emergency alerts now flow through PostgreSQL inbox polling.";
   if (typeof log === "function") {
     log(message);
   }

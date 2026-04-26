@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/journal_entry.dart';
-import '../utils/env.dart';
+import 'api_endpoint_service.dart';
 import 'crypto_service.dart';
 import 'storage_service.dart';
 
@@ -149,7 +149,7 @@ class ReportService {
     }
 
     // TODO: validate clinician_id against registered clinicians.
-    final uri = Uri.parse('${Env.apiBaseUrl}/reports');
+    final uri = ApiEndpointService.instance.buildUri('/reports');
     final response = await http.post(
       uri,
       headers: const <String, String>{

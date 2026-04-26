@@ -4,7 +4,7 @@ import 'dart:math';
 import 'package:http/http.dart' as http;
 
 import '../models/journal_entry.dart';
-import '../utils/env.dart';
+import 'api_endpoint_service.dart';
 import 'report_service.dart';
 import 'storage_service.dart';
 
@@ -17,6 +17,8 @@ class SecureLinkService {
   static const _linkedClinicianPublicKeyKey = 'linked_clinician_public_key_pem';
   static const _patientDeviceIdKey = 'patient_device_id';
 
+  String? _lastLinkError;
+
   String? get linkedClinicianId {
     final value = StorageService.instance.settingsBox.get(_linkedClinicianIdKey);
     if (value is String && value.trim().isNotEmpty) {
@@ -28,41 +30,55 @@ class SecureLinkService {
   bool get isLinked => linkedClinicianId != null;
 
   String? get linkedClinicianPublicKeyPem => _linkedClinicianPublicKey();
+  String? get lastLinkError => _lastLinkError;
 
   Future<bool> linkClinician(String clinicianId) async {
     final trimmedId = clinicianId.trim();
-    if (trimmedId.isEmpty) return false;
-
-    final patientDeviceId = await _getOrCreatePatientDeviceId();
-    final uri = Uri.parse('${Env.apiBaseUrl}/clinicians/link');
-    final response = await http.post(
-      uri,
-      headers: const {'Content-Type': 'application/json'},
-      body: jsonEncode(
-        {
-          'patient_device_id': patientDeviceId,
-          'clinician_id': trimmedId,
-        },
-      ),
-    );
-
-    if (response.statusCode < 200 || response.statusCode >= 300) {
+    if (trimmedId.isEmpty) {
+      _lastLinkError = 'Clinician ID is required.';
       return false;
     }
 
-    final decoded = jsonDecode(response.body);
-    if (decoded is! Map<String, dynamic>) {
+    try {
+      final patientDeviceId = await _getOrCreatePatientDeviceId();
+      final uri = ApiEndpointService.instance.buildUri('/clinicians/link');
+      final response = await http.post(
+        uri,
+        headers: const {'Content-Type': 'application/json'},
+        body: jsonEncode(
+          {
+            'patient_device_id': patientDeviceId,
+            'clinician_id': trimmedId,
+          },
+        ),
+      );
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        _lastLinkError =
+            'Link failed with HTTP ${response.statusCode} at ${ApiEndpointService.instance.baseUrl}.';
+        return false;
+      }
+
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, dynamic>) {
+        _lastLinkError = 'Link response payload was not valid JSON.';
+        return false;
+      }
+
+      final publicKeyPem = decoded['clinician_public_key_pem'];
+      if (publicKeyPem is! String || publicKeyPem.trim().isEmpty) {
+        _lastLinkError = 'Clinician exists but has no public key registered.';
+        return false;
+      }
+
+      await StorageService.instance.settingsBox.put(_linkedClinicianIdKey, trimmedId);
+      await StorageService.instance.settingsBox.put(_linkedClinicianPublicKeyKey, publicKeyPem.trim());
+      _lastLinkError = null;
+      return true;
+    } catch (error) {
+      _lastLinkError = 'Could not reach ${ApiEndpointService.instance.baseUrl}: $error';
       return false;
     }
-
-    final publicKeyPem = decoded['clinician_public_key_pem'];
-    if (publicKeyPem is! String || publicKeyPem.trim().isEmpty) {
-      return false;
-    }
-
-    await StorageService.instance.settingsBox.put(_linkedClinicianIdKey, trimmedId);
-    await StorageService.instance.settingsBox.put(_linkedClinicianPublicKeyKey, publicKeyPem.trim());
-    return true;
   }
 
   Future<bool> registerClinicianConnection({
@@ -75,7 +91,7 @@ class SecureLinkService {
       return false;
     }
 
-    final uri = Uri.parse('${Env.apiBaseUrl}/clinicians/register');
+    final uri = ApiEndpointService.instance.buildUri('/clinicians/register');
     final response = await http.post(
       uri,
       headers: const {'Content-Type': 'application/json'},
@@ -184,7 +200,7 @@ class SecureLinkService {
     required Map<String, dynamic> lockedBox,
   }) async {
     final patientDeviceId = await _getOrCreatePatientDeviceId();
-    final uri = Uri.parse('${Env.apiBaseUrl}$path');
+    final uri = ApiEndpointService.instance.buildUri(path);
     final response = await http.post(
       uri,
       headers: const {'Content-Type': 'application/json'},

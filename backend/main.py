@@ -21,7 +21,7 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://anora:anora@localhost:5432/anora")
 
-# In production, set ALLOWED_ORIGINS to your App Runner service URL
+# In production, set ALLOWED_ORIGINS to the deployed frontend origin(s).
 ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")

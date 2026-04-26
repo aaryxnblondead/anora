@@ -28,4 +28,4 @@ Expected payload shape:
 
 Do not deploy this function for the current version of Anora.
 
-If you are migrating an older environment, archive this folder after confirming the backend and clinician inbox polling flow are working in AWS.
+If you are migrating an older environment, archive this folder after confirming the backend and clinician inbox polling flow are working in your deployed backend.

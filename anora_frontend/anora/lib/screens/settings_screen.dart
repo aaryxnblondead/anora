@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../screens/share_report_screen.dart';
+import '../services/api_endpoint_service.dart';
 import '../services/auth_service.dart';
 import '../services/secure_link_service.dart';
 import '../services/storage_service.dart';
@@ -95,7 +96,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         content: Text(
                           ok
                               ? 'Securely linked to your clinician.'
-                              : 'Could not link right now. Check the clinician ID and try again.',
+                              : (SecureLinkService.instance.lastLinkError ??
+                                  'Could not link right now. Check the clinician ID and try again.'),
                         ),
                       ),
                     );
@@ -107,11 +109,95 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
+  Future<void> _showApiEndpointDialog() async {
+    final endpointController = TextEditingController(
+      text: ApiEndpointService.instance.overrideBaseUrl ?? '',
+    );
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        var isSaving = false;
+        return StatefulBuilder(
+          builder: (context, setLocalState) {
+            return AlertDialog(
+              title: const Text('Backend API endpoint'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: endpointController,
+                    autofocus: true,
+                    keyboardType: TextInputType.url,
+                    decoration: const InputDecoration(
+                      labelText: 'Base URL (http/https)',
+                      hintText: 'https://your-api.example.com',
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Leave blank to use the build-time API_BASE_URL.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isSaving ? null : () => Navigator.of(ctx).pop(),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: isSaving
+                      ? null
+                      : () async {
+                          final messenger = ScaffoldMessenger.of(this.context);
+                          setLocalState(() => isSaving = true);
+                          final rawValue = endpointController.text.trim();
+
+                          try {
+                            await ApiEndpointService.instance.setOverrideBaseUrl(
+                              rawValue.isEmpty ? null : rawValue,
+                            );
+                            await ApiEndpointService.instance.ping();
+
+                            if (!mounted) return;
+                            setState(() {});
+                            if (ctx.mounted) {
+                              Navigator.of(ctx).pop();
+                            }
+                            messenger.showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  'Connected to ${ApiEndpointService.instance.baseUrl}.',
+                                ),
+                              ),
+                            );
+                          } catch (error) {
+                            if (!mounted) return;
+                            setLocalState(() => isSaving = false);
+                            messenger.showSnackBar(
+                              SnackBar(content: Text('Endpoint check failed: $error')),
+                            );
+                          }
+                        },
+                  child: Text(isSaving ? 'Saving...' : 'Save & test'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsControllerProvider);
     final controller = ref.read(settingsControllerProvider.notifier);
     final linkedClinicianId = SecureLinkService.instance.linkedClinicianId;
+    final activeApiBaseUrl = ApiEndpointService.instance.baseUrl;
+    final apiOverride = ApiEndpointService.instance.overrideBaseUrl;
 
     return SafeArea(
       child: ListView(
@@ -241,6 +327,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           _SectionCard(
             title: 'Storage',
             children: [
+              _SettingRow(
+                title: 'Backend API endpoint',
+                subtitle: apiOverride == null
+                    ? 'Using build URL: $activeApiBaseUrl'
+                    : 'Using local override: $activeApiBaseUrl',
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: _showApiEndpointDialog,
+              ),
+              const Divider(),
               _SettingRow(
                 title: 'Export private backup',
                 subtitle: 'Save a protected local file to your device.',

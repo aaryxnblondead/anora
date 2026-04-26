@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-import '../utils/env.dart';
+import 'api_endpoint_service.dart';
 
 class ClinicianInboxAlertSnapshot {
   const ClinicianInboxAlertSnapshot({
@@ -36,7 +36,8 @@ class ClinicianInboxSyncService {
     required String clinicianId,
     DateTime? since,
   }) async {
-    final uri = Uri.parse('${Env.apiBaseUrl}/alerts/emergency/$clinicianId').replace(
+    final uri = ApiEndpointService.instance.buildUri(
+      '/alerts/emergency/$clinicianId',
       queryParameters: <String, String>{
         if (since != null) 'since': since.toUtc().toIso8601String(),
         'limit': '100',

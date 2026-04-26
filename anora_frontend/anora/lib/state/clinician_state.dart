@@ -3,10 +3,10 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
+import '../services/api_endpoint_service.dart';
 import '../services/clinician_crypto_service.dart';
 import '../services/clinician_push_service.dart';
 import '../services/storage_service.dart';
-import '../utils/env.dart';
 
 const _clinicianInboxCacheKey = 'clinician_inbox_cache';
 
@@ -396,7 +396,9 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
       );
       await _persistCache();
     } catch (error) {
-      state = state.copyWith(error: 'Could not sync alerts: $error');
+      state = state.copyWith(
+        error: 'Could not sync alerts from ${ApiEndpointService.instance.baseUrl}: $error',
+      );
     }
   }
 
@@ -411,7 +413,7 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
 
     try {
       // TODO: Enforce clinician JWT auth on GET /reports backend endpoint.
-      final response = await http.get(Uri.parse('${Env.apiBaseUrl}/reports/$id'));
+      final response = await http.get(ApiEndpointService.instance.buildUri('/reports/$id'));
       if (response.statusCode != 200) {
         throw Exception('HTTP ${response.statusCode}: ${response.body}');
       }

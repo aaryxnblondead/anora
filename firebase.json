@@ -1,4 +1,4 @@
 {
   "deprecated": true,
-  "message": "Static web hosting is handled through Amazon S3 or AWS App Runner."
+  "message": "Static web hosting is handled outside Firebase for this project."
 }

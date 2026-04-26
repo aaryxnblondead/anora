@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
 
 import '../models/journal_entry.dart';
-import '../utils/env.dart';
+import '../services/api_endpoint_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/journal_mascot.dart';
 
@@ -245,21 +244,21 @@ class _HomeContent extends StatelessWidget {
             child: OutlinedButton.icon(
               onPressed: () async {
                 try {
-                  final response = await http.get(Uri.parse('${Env.apiBaseUrl}/health'));
+                  await ApiEndpointService.instance.ping();
                   if (!context.mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: Text(
-                        response.statusCode == 200
-                            ? 'Backend reachable through AWS deployment.'
-                            : 'Backend ping returned HTTP ${response.statusCode}.',
-                      ),
+                      content: Text('Backend reachable at ${ApiEndpointService.instance.baseUrl}.'),
                     ),
                   );
                 } catch (error) {
                   if (!context.mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Could not reach backend: $error')),
+                    SnackBar(
+                      content: Text(
+                        'Could not reach ${ApiEndpointService.instance.baseUrl}: $error',
+                      ),
+                    ),
                   );
                 }
               },
