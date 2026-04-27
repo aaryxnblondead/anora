@@ -268,7 +268,8 @@ class ReportService {
   }
 
   Future<String> generateInviteCode(String clinicianId) async {
-    if (clinicianId.trim().isEmpty) {
+    final normalizedClinicianId = clinicianId.trim();
+    if (normalizedClinicianId.isEmpty) {
       throw ArgumentError('clinicianId must be non-empty');
     }
 
@@ -276,8 +277,14 @@ class ReportService {
     final response = await ApiEndpointService.instance.post(
       uri,
       headers: const {'Content-Type': 'application/json'},
-      body: jsonEncode({'clinician_id': clinicianId}),
+      body: jsonEncode({'clinician_id': normalizedClinicianId}),
     );
+
+    // Legacy backend compatibility: older deployments do not implement
+    // /clinicians/generate-code and still rely on sharing clinician_id directly.
+    if (response.statusCode == 404) {
+      return normalizedClinicianId;
+    }
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw ReportUploadException(response.statusCode, response.body);

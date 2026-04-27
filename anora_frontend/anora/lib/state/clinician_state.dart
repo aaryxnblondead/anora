@@ -302,7 +302,7 @@ class ClinicianReportsState {
     return allRecords;
   }
 
-  int get unreadAlertCount => alerts.where((alert) => alert.isUnread).length;
+  int get unreadAlertCount => alerts.where((a) => a.isUnread).length;
 }
 
 final clinicianReportsProvider =
@@ -463,88 +463,66 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
     if (clinicianId == null || clinicianId.isEmpty) {
       return;
     }
-
+  
     try {
       final snapshots = await ClinicianInboxSyncService.instance.fetchLatestReports(
         clinicianId: clinicianId,
-        since: state.lastReportSyncAt,
-        limit: 50,
       );
 
-      if (snapshots.isEmpty) {
-        state = state.copyWith(lastReportSyncAt: DateTime.now().toUtc(), error: null);
-        await _persistCache();
-        return;
-      }
-
-      final existingById = <String, PatientRecord>{
-        for (final record in state.records.where((record) => record.isReport))
-          record.reportId: record,
+      state = state.copyWith(
+        lastReportSyncAt: DateTime.now().toUtc(),
+        error: null,
+      );
+      final existing = <String, PatientRecord>{
+        for (final r in state.records) r.reportId: r,
       };
 
-      final preservedNonReportRecords = state.records
-          .where((record) => !record.isReport)
-          .toList(growable: true);
-
-      for (final snapshot in snapshots) {
-        final lockedBox = snapshot.lockedBox;
-        final encryptedKeyB64 = lockedBox['encrypted_key'];
-        final encryptedPayloadRaw = lockedBox['encrypted_payload'];
-        if (encryptedKeyB64 is! String || encryptedPayloadRaw is! Map<String, dynamic>) {
+      final newRecords = <PatientRecord>[];
+      for (var i = 0; i < snapshots.length; i++) {
+        final snap = snapshots[i];
+        if (snap.reportId.isEmpty || existing.containsKey(snap.reportId)) {
           continue;
         }
 
-        final encryptedPayload = <String, String>{};
-        for (final entry in encryptedPayloadRaw.entries) {
-          encryptedPayload[entry.key] = entry.value.toString();
+        final lb = snap.lockedBox;
+        final encKeyB64 = lb['encrypted_key'] as String?;
+        final rawPay = lb['encrypted_payload'];
+        final encPay = <String, String>{};
+        if (rawPay is Map) {
+          rawPay.forEach((k, v) => encPay[k.toString()] = v.toString());
         }
 
-        final baseRecord = PatientRecord(
-          patientLabel: _defaultPatientLabel(preservedNonReportRecords.length),
-          reportId: snapshot.reportId,
-          receivedAt: snapshot.createdAt,
-          clinicianId: snapshot.clinicianId,
+        newRecords.add(PatientRecord(
+          patientLabel: _defaultPatientLabel(
+              state.records.length + newRecords.length),
+          reportId: snap.reportId,
+          receivedAt: snap.createdAt,
+          clinicianId: snap.clinicianId,
           entryCount: null,
           avgMoodScore: null,
           riskFlagCounts: null,
           topEmotion: null,
           isDecrypted: false,
-          encryptedKeyB64: encryptedKeyB64,
-          encryptedPayload: encryptedPayload,
+          encryptedKeyB64: encKeyB64,
+          encryptedPayload: encPay.isEmpty ? null : encPay,
           riskTrend: null,
           kind: ClinicianInboxItemKind.report,
           isUnread: false,
           alertPriority: null,
-        );
-
-        final existing = existingById[snapshot.reportId];
-        final merged = existing == null
-            ? baseRecord
-            : baseRecord.copyWith(
-                patientLabel: existing.patientLabel,
-                isDecrypted: existing.isDecrypted,
-                entryCount: existing.entryCount,
-                avgMoodScore: existing.avgMoodScore,
-                riskFlagCounts: existing.riskFlagCounts,
-                topEmotion: existing.topEmotion,
-                riskTrend: existing.riskTrend,
-              );
-
-        existingById[snapshot.reportId] = merged;
+        ));
       }
 
-      preservedNonReportRecords.addAll(existingById.values);
-      preservedNonReportRecords.sort((a, b) => b.receivedAt.compareTo(a.receivedAt));
-
-      state = state.copyWith(
-        records: preservedNonReportRecords,
-        lastReportSyncAt: DateTime.now().toUtc(),
-        error: null,
-      );
+      if (newRecords.isEmpty) {
+        return;
+      }
+      final combined = [...state.records, ...newRecords]
+        ..sort((a, b) => b.receivedAt.compareTo(a.receivedAt));
+      state = state.copyWith(records: combined, error: null);
       await _persistCache();
     } catch (error) {
+      // Use state.copyWith error — NOT ReportUploadException
       state = state.copyWith(
-        error: 'Could not sync reports from ${ApiEndpointService.instance.baseUrl}: $error',
+        error: 'Could not sync reports: $error',
       );
     }
   }

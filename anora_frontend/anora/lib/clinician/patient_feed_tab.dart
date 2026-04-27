@@ -1,186 +1,355 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
 
-import '../services/clinician_crypto_service.dart';
-import '../services/report_service.dart';
+import '../services/clinician_push_service.dart';
+import 'providers/linked_patients_provider.dart';
 
-final clinicianFeedProvider =
-    FutureProvider.autoDispose.family<List<Map<String, dynamic>>, String>((ref, clinicianId) async {
-  if (clinicianId.isEmpty) {
-    throw Exception('Clinician ID must not be empty.');
-  }
-  return ReportService.instance.fetchFeedForClinician(clinicianId);
-});
-
-class PatientFeedTab extends ConsumerWidget {
-  final String clinicianId;
+class PatientFeedTab extends ConsumerStatefulWidget {
   const PatientFeedTab({super.key, required this.clinicianId});
 
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final feedAsync = ref.watch(clinicianFeedProvider(clinicianId));
+  final String clinicianId;
 
-    return feedAsync.when(
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (err, stack) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Text('Error fetching feed: $err'),
-        ),
-      ),
-      data: (feedItems) {
-        if (feedItems.isEmpty) {
-          return const Center(child: Text('No patient updates yet.'));
-        }
-        return RefreshIndicator(
-          onRefresh: () => ref.refresh(clinicianFeedProvider(clinicianId).future),
-          child: ListView.builder(
-            itemCount: feedItems.length,
-            itemBuilder: (context, index) {
-              final item = feedItems[index];
-              return FeedItemCard(item: item);
-            },
-          ),
-        );
-      },
-    );
-  }
+  @override
+  ConsumerState<PatientFeedTab> createState() => _PatientFeedTabState();
 }
 
-class FeedItemCard extends StatelessWidget {
-  const FeedItemCard({super.key, required this.item});
-
-  final Map<String, dynamic> item;
-
-  Map<String, dynamic> _decryptPayload(Map<String, dynamic> lockedBox) {
-    try {
-      final encryptedKey = lockedBox['encrypted_key'] as String;
-      final encryptedPayload = (lockedBox['encrypted_payload'] as Map<String, dynamic>)
-          .map((key, value) => MapEntry(key, value.toString()));
-
-      final decryptedJson = ClinicianCryptoService.instance.decryptReportPayload(
-        encryptedKeyB64: encryptedKey,
-        encryptedPayload: encryptedPayload,
-      );
-      return jsonDecode(decryptedJson) as Map<String, dynamic>;
-    } catch (e) {
-      debugPrint('Decryption failed for item ${item['id']}: $e');
-      return {'error': 'Failed to decrypt payload. The key may be incorrect or data corrupted.'};
-    }
+class _PatientFeedTabState extends ConsumerState<PatientFeedTab> {
+  @override
+  void initState() {
+    super.initState();
+    Future.microtask(() {
+      ref.read(linkedPatientsProvider.notifier).sync();
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final sourceType = item['source_type'] as String?;
-    final lockedBox = item['locked_box'] as Map<String, dynamic>?;
+    final state = ref.watch(linkedPatientsProvider);
 
-    Widget content;
-    IconData icon;
-
-    if (lockedBox != null) {
-      final decrypted = _decryptPayload(lockedBox);
-
-      if (decrypted.containsKey('error')) {
-        content = Text('Error: ${decrypted['error']}', style: TextStyle(color: Theme.of(context).colorScheme.error));
-        icon = Icons.error_outline;
-      } else {
-        switch (sourceType) {
-          case 'mood_event':
-            icon = Icons.sentiment_very_satisfied;
-            content = _buildMoodEventContent(decrypted);
-            break;
-          case 'shared_entry':
-            icon = Icons.article_outlined;
-            content = _buildSharedEntryContent(decrypted);
-            break;
-          case 'emergency_alert':
-            icon = Icons.warning_amber_rounded;
-            content = _buildEmergencyAlertContent(decrypted);
-            break;
-          default:
-            icon = Icons.question_mark;
-            content = Text('Unknown event type: $sourceType');
-        }
-      }
-    } else {
-      icon = Icons.info_outline;
-      content = Text('Event of type "$sourceType" with no details.');
+    if (state.isLoading && state.patients.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
     }
 
-    final timestampStr = item['event_timestamp'] ?? item['created_at'];
-    final timestamp = DateTime.tryParse(timestampStr ?? '')?.toLocal();
-    final formattedTime = timestamp != null ? DateFormat.yMMMd().add_jm().format(timestamp) : 'Unknown time';
-
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: ListTile(
-        leading: Icon(icon, color: _getIconColor(sourceType, context)),
-        title: Text(
-          _getTitle(sourceType),
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SizedBox(height: 4),
-            content,
-            const SizedBox(height: 8),
+    return RefreshIndicator(
+      onRefresh: () => ref.read(linkedPatientsProvider.notifier).sync(),
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Live Feed',
+                      style: Theme.of(context).textTheme.headlineMedium,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Linked patients',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                onPressed: () => ref.read(linkedPatientsProvider.notifier).sync(),
+                icon: const Icon(Icons.refresh_rounded),
+                tooltip: 'Refresh',
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: _StatBox(
+                  value: '${state.totalLinked}',
+                  label: 'Linked',
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _StatBox(
+                  value: '${state.withMoodData}',
+                  label: 'With mood data',
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _StatBox(
+                  value: '${state.withRiskFlags}',
+                  label: 'Risk flags',
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            state.lastSyncAt == null
+                ? 'Last synced: never'
+                : 'Last synced: ${_relativeTime(state.lastSyncAt!.toLocal())}',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 14),
+          if (state.patients.isEmpty)
+            const _EmptyState()
+          else
+            ...state.patients.map(
+              (patient) => _PatientCard(patient: patient),
+            ),
+          if (state.error != null) ...[
+            const SizedBox(height: 12),
             Text(
-              'Patient ID: ${item['patient_device_id']}\n$formattedTime',
-              style: Theme.of(context).textTheme.bodySmall,
+              state.error!,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.error,
+                  ),
             ),
           ],
-        ),
-        isThreeLine: true,
+        ],
       ),
     );
   }
+}
 
-  String _getTitle(String? sourceType) {
-    switch (sourceType) {
-      case 'mood_event':
-        return 'Mood Update';
-      case 'shared_entry':
-        return 'Shared Journal Entry';
-      case 'emergency_alert':
-        return 'Emergency Alert';
-      default:
-        return 'Update';
-    }
-  }
+class _StatBox extends StatelessWidget {
+  const _StatBox({required this.value, required this.label});
 
-  Color? _getIconColor(String? sourceType, BuildContext context) {
-    switch (sourceType) {
-      case 'emergency_alert':
-        return Theme.of(context).colorScheme.error;
-      case 'shared_entry':
-        return Theme.of(context).colorScheme.primary;
-      case 'mood_event':
-        return Colors.green.shade600;
-      default:
-        return Theme.of(context).colorScheme.onSurface.withOpacity(0.6);
-    }
-  }
+  final String value;
+  final String label;
 
-  Widget _buildMoodEventContent(Map<String, dynamic> data) {
-    final moodScore = data['mood_score'] as num?;
-    final moodLabels = (data['mood_labels'] as List?)?.cast<String>() ?? [];
-    return Text('Score: ${moodScore?.toStringAsFixed(2) ?? 'N/A'}\nLabels: ${moodLabels.join(', ')}');
-  }
-
-  Widget _buildSharedEntryContent(Map<String, dynamic> data) {
-    final text = data['text'] as String?;
-    return Text(text ?? 'No content shared.', maxLines: 2, overflow: TextOverflow.ellipsis);
-  }
-
-  Widget _buildEmergencyAlertContent(Map<String, dynamic> data) {
-    final snippet = data['text_snippet'] as String?;
-    return Text(
-      'Trigger: "${snippet ?? 'N/A'}"',
-      style: const TextStyle(fontWeight: FontWeight.bold),
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE0DED7)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(value, style: Theme.of(context).textTheme.titleLarge),
+          Text(label, style: Theme.of(context).textTheme.bodySmall),
+        ],
+      ),
     );
+  }
+}
+
+class _PatientCard extends ConsumerWidget {
+  const _PatientCard({required this.patient});
+
+  final LinkedPatientEntry patient;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final mood = patient.latestMood;
+    final hasRisk = mood?.hasRiskFlags == true;
+    final moodScore = mood?.moodScore;
+
+    Color? accent;
+    if (hasRisk) {
+      accent = const Color(0xFFE38B7C);
+    } else if (moodScore != null && moodScore >= 0.62) {
+      accent = const Color(0xFF4D6B5B);
+    } else if (moodScore != null && moodScore >= 0.40) {
+      accent = const Color(0xFF5B6F8F);
+    }
+
+    final labels = mood?.moodLabels ?? const <String>[];
+    final flags = mood?.riskFlags ?? const <String>[];
+    final relative = _relativeTime((mood?.lastMoodAt ?? patient.linkedAt).toLocal());
+
+    final trimmed = patient.patientLabel.trim();
+    final initials = trimmed.isEmpty
+        ? 'PA'
+        : trimmed.substring(0, trimmed.length >= 2 ? 2 : 1).toUpperCase();
+
+    final moodColor = hasRisk
+        ? const Color(0xFFE38B7C)
+        : (moodScore != null && moodScore >= 0.62)
+            ? const Color(0xFF4D6B5B)
+            : const Color(0xFF5B6F8F);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE0DED7)),
+      ),
+      child: Container(
+        decoration: BoxDecoration(
+          border: accent == null
+              ? null
+              : Border(left: BorderSide(color: accent, width: 3.5)),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: ListTile(
+          leading: CircleAvatar(
+            backgroundColor: const Color(0xFFF1F0EB),
+            child: Text(initials),
+          ),
+          title: Text(
+            patient.patientLabel,
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 4),
+              if (labels.isNotEmpty)
+                Text(labels.join(' · '))
+              else
+                Text(
+                  'No mood data yet',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        fontStyle: FontStyle.italic,
+                      ),
+                ),
+              if (flags.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: flags
+                      .map(
+                        (flag) => Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE38B7C),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            flag,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ),
+                      )
+                      .toList(growable: false),
+                ),
+              ],
+              const SizedBox(height: 6),
+              Text(relative, style: Theme.of(context).textTheme.bodySmall),
+            ],
+          ),
+          trailing: patient.hasMoodData
+              ? Text(
+                  '${((mood?.moodScore ?? 0) * 100).round()}%',
+                  style: TextStyle(
+                    color: moodColor,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 16,
+                  ),
+                )
+              : const Text(
+                  'No data',
+                  style: TextStyle(color: Color(0xFFB0A898), fontSize: 12),
+                ),
+          onLongPress: () => _showRenameDialog(context, ref, patient),
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyState extends StatelessWidget {
+  const _EmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 320,
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.person_add_rounded,
+              size: 52,
+              color: Color(0xFF5B6F8F),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'No linked patients yet',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Share your Clinician ID from the Profile tab.\n'
+              'Patients link from the app Settings screen.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _relativeTime(DateTime dt) {
+  final diff = DateTime.now().difference(dt);
+  if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
+  if (diff.inHours < 24) return '${diff.inHours} hours ago';
+  const months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  return '${months[dt.month - 1]} ${dt.day}';
+}
+
+Future<void> _showRenameDialog(
+  BuildContext context,
+  WidgetRef ref,
+  LinkedPatientEntry patient,
+) async {
+  final ctrl = TextEditingController(text: patient.patientLabel);
+  final result = await showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Rename patient'),
+      content: TextField(
+        controller: ctrl,
+        decoration: const InputDecoration(labelText: 'Label'),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(ctx, ctrl.text),
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+  ctrl.dispose();
+
+  if (result != null && result.trim().isNotEmpty) {
+    await ref
+        .read(linkedPatientsProvider.notifier)
+        .updatePatientLabel(patient.patientDeviceId, result);
   }
 }

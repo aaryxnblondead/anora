@@ -32,8 +32,9 @@ class SecureLinkService {
   String? get lastLinkError => _lastLinkError;
 
   Future<bool> linkClinicianWithCode(String inviteCode) async {
-    final trimmedCode = inviteCode.trim().toUpperCase();
-    if (trimmedCode.isEmpty) {
+    final trimmedInput = inviteCode.trim();
+    final normalizedInviteCode = trimmedInput.toUpperCase();
+    if (normalizedInviteCode.isEmpty) {
       _lastLinkError = 'Invite code is required.';
       return false;
     }
@@ -47,10 +48,19 @@ class SecureLinkService {
         body: jsonEncode(
           {
             'patient_device_id': patientDeviceId,
-            'invite_code': trimmedCode,
+            'invite_code': normalizedInviteCode,
           },
         ),
       );
+
+      // Legacy backend compatibility: retry with /clinicians/link when the
+      // invite-code endpoint is not available.
+      if (response.statusCode == 404) {
+        return _linkClinicianLegacy(
+          patientDeviceId: patientDeviceId,
+          clinicianId: trimmedInput,
+        );
+      }
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
         _lastLinkError =
@@ -79,6 +89,62 @@ class SecureLinkService {
       _lastLinkError = 'Could not reach ${ApiEndpointService.instance.baseUrl}: $error';
       return false;
     }
+  }
+
+  Future<bool> _linkClinicianLegacy({
+    required String patientDeviceId,
+    required String clinicianId,
+  }) async {
+    final trimmedClinicianId = clinicianId.trim();
+    if (trimmedClinicianId.isEmpty) {
+      _lastLinkError = 'Clinician ID is required.';
+      return false;
+    }
+
+    final legacyUri = ApiEndpointService.instance.buildUri('/clinicians/link');
+    final legacyResponse = await ApiEndpointService.instance.post(
+      legacyUri,
+      headers: const {'Content-Type': 'application/json'},
+      body: jsonEncode(
+        {
+          'patient_device_id': patientDeviceId,
+          'clinician_id': trimmedClinicianId,
+        },
+      ),
+    );
+
+    if (legacyResponse.statusCode < 200 || legacyResponse.statusCode >= 300) {
+      _lastLinkError =
+          'Link failed with HTTP ${legacyResponse.statusCode} at ${ApiEndpointService.instance.baseUrl}.';
+      return false;
+    }
+
+    final decoded = jsonDecode(legacyResponse.body);
+    if (decoded is! Map<String, dynamic>) {
+      _lastLinkError = 'Link response payload was not valid JSON.';
+      return false;
+    }
+
+    final resolvedClinicianId = decoded['clinician_id'];
+    final publicKeyPem = decoded['clinician_public_key_pem'];
+    if (resolvedClinicianId is! String ||
+        resolvedClinicianId.trim().isEmpty ||
+        publicKeyPem is! String ||
+        publicKeyPem.trim().isEmpty) {
+      _lastLinkError = 'Clinician exists but has no public key registered.';
+      return false;
+    }
+
+    await StorageService.instance.settingsBox.put(
+      _linkedClinicianIdKey,
+      resolvedClinicianId.trim(),
+    );
+    await StorageService.instance.settingsBox.put(
+      _linkedClinicianPublicKeyKey,
+      publicKeyPem.trim(),
+    );
+    _lastLinkError = null;
+    return true;
   }
 
   Future<bool> registerClinicianConnection({

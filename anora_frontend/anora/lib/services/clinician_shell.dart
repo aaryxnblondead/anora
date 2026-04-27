@@ -1,7 +1,7 @@
 import 'package:anora/services/report_service.dart';
 import 'package:anora/clinician/patient_feed_tab.dart';
 import 'package:anora/clinician/patient_list_tab.dart';
-import 'package:anora/clinician/clinician_settings_tab.dart';
+import 'package:anora/clinician/profile_tab.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -23,7 +23,7 @@ class _ClinicianShellState extends State<ClinicianShell> {
     _tabs = [
       const PatientListTab(),
       PatientFeedTab(clinicianId: widget.clinicianId),
-      const ClinicianSettingsTab(),
+      const ProfileTab(),
     ];
   }
 

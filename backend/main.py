@@ -379,6 +379,124 @@ def register_clinician(payload: ClinicianRegistration) -> dict[str, str]:
     return {"clinician_id": payload.clinician_id, "status": "registered"}
 
 
+@app.post("/reports", status_code=201)
+def upload_report(payload: ReportUpload) -> dict[str, str]:
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO reports (clinician_id, locked_box)
+                VALUES (%s, %s)
+                RETURNING id, clinician_id, created_at;
+                """,
+                (payload.clinician_id, Json(payload.locked_box)),
+            )
+            row = cursor.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=500, detail="Failed to store report")
+
+    report_id = str(row["id"])
+    logger.info(
+        "stored_report report_id=%s clinician_id=%s created_at=%s",
+        report_id,
+        row["clinician_id"],
+        row["created_at"],
+    )
+    return {"report_id": report_id, "status": "stored"}
+
+
+@app.get("/reports/clinician/{clinician_id}")
+def list_reports_for_clinician(
+    clinician_id: str,
+    since: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    safe_limit = max(1, min(int(limit), 200))
+    cid = clinician_id.strip()
+    if not cid:
+        raise HTTPException(status_code=422, detail="clinician_id required")
+
+    query_parts = [
+        "SELECT id, clinician_id, locked_box, created_at",
+        "FROM reports",
+        "WHERE clinician_id = %s",
+    ]
+    params: list[Any] = [cid]
+
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=timezone.utc)
+            query_parts.append("AND created_at > %s")
+            params.append(since_dt)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail="Invalid since format"
+            ) from exc
+
+    query_parts.extend(["ORDER BY created_at DESC", "LIMIT %s"])
+    params.append(safe_limit)
+
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("\n".join(query_parts), tuple(params))
+            rows = cur.fetchall()
+
+    reports = []
+    for row in rows:
+        cat = row.get("created_at")
+        cat_iso = (
+            cat.astimezone(timezone.utc).isoformat()
+            if isinstance(cat, datetime) else str(cat)
+        )
+        reports.append({
+            "report_id": str(row["id"]),
+            "clinician_id": str(row["clinician_id"]),
+            "locked_box": row["locked_box"],
+            "created_at": cat_iso,
+            "source_type": "report",
+        })
+
+    return {"reports": reports}
+
+
+@app.post("/clinicians/link", status_code=201)
+def link_patient_to_clinician(payload: LinkRequest) -> dict[str, Any]:
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT clinician_id, public_key_pem
+                FROM clinicians
+                WHERE clinician_id = %s;
+                """,
+                (payload.clinician_id,),
+            )
+            clinician = cursor.fetchone()
+
+            if clinician is None:
+                raise HTTPException(status_code=404, detail="Clinician not found")
+
+            cursor.execute(
+                """
+                INSERT INTO patient_links (patient_device_id, clinician_id)
+                VALUES (%s, %s)
+                ON CONFLICT (patient_device_id, clinician_id)
+                DO NOTHING;
+                """,
+                (payload.patient_device_id, payload.clinician_id),
+            )
+
+    return {
+        "linked": True,
+        "status": "securely_linked",
+        "clinician_id": payload.clinician_id,
+        "clinician_public_key_pem": str(clinician["public_key_pem"]),
+    }
+
+
 @app.post("/clinicians/generate-code", status_code=201)
 def generate_invite_code(payload: ClinicianIdPayload) -> dict[str, str]:
     """Generates a single-use invite code for a clinician."""
@@ -798,88 +916,6 @@ def get_emergency_alerts(
     return {"alerts": alerts}
 
 
-@app.post("/reports", status_code=201)
-def upload_report(payload: ReportUpload) -> dict[str, str]:
-    with get_connection() as connection:
-        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(
-                """
-                INSERT INTO reports (clinician_id, locked_box)
-                VALUES (%s, %s)
-                RETURNING id, clinician_id, created_at;
-                """,
-                (payload.clinician_id, Json(payload.locked_box)),
-            )
-            row = cursor.fetchone()
-
-    if row is None:
-        raise HTTPException(status_code=500, detail="Failed to store report")
-
-    report_id = str(row["id"])
-    logger.info(
-        "stored_report report_id=%s clinician_id=%s created_at=%s",
-        report_id,
-        row["clinician_id"],
-        row["created_at"],
-    )
-    return {"report_id": report_id, "status": "stored"}
-
-
-@app.get("/reports/clinician/{clinician_id}")
-def list_reports_for_clinician(
-    clinician_id: str,
-    since: str | None = None,
-    limit: int = 50,
-) -> dict[str, list[dict[str, Any]]]:
-    safe_limit = max(1, min(int(limit), 200))
-    clinician_id_value = clinician_id.strip()
-    if not clinician_id_value:
-        raise HTTPException(status_code=422, detail="clinician_id is required")
-
-    query_parts = [
-        "SELECT id, clinician_id, locked_box, created_at",
-        "FROM reports",
-        "WHERE clinician_id = %s",
-    ]
-    params: list[Any] = [clinician_id_value]
-
-    if since:
-        try:
-            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
-            if since_dt.tzinfo is None:
-                since_dt = since_dt.replace(tzinfo=timezone.utc)
-            query_parts.append("AND created_at > %s")
-            params.append(since_dt)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail="Invalid since format") from exc
-
-    query_parts.extend(["ORDER BY created_at DESC", "LIMIT %s"])
-    params.append(safe_limit)
-
-    with get_connection() as connection:
-        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute("\n".join(query_parts), tuple(params))
-            rows = cursor.fetchall()
-
-    reports = []
-    for row in rows:
-        created_at = row.get("created_at")
-        created_at_iso = (
-            created_at.astimezone(timezone.utc).isoformat()
-            if isinstance(created_at, datetime)
-            else str(created_at)
-        )
-        reports.append({
-            "report_id": str(row["id"]),
-            "clinician_id": str(row["clinician_id"]),
-            "locked_box": row["locked_box"],
-            "created_at": created_at_iso,
-            "source_type": "report",
-        })
-
-    return {"reports": reports}
-
-
 @app.get("/reports/{report_id}")
 def get_report(report_id: str) -> dict[str, object]:
     """MVP endpoint without authentication. TODO: Add clinician JWT auth before production."""
@@ -927,6 +963,90 @@ def get_report(report_id: str) -> dict[str, object]:
         "created_at": created_at_iso,
         "source_type": row.get("source_type", "report"),
     }
+
+
+@app.get("/patients/linked/{clinician_id}")
+def get_linked_patients(clinician_id: str) -> dict[str, Any]:
+    """
+    Returns all patients linked to this clinician with their
+    latest mood event joined via LATERAL subquery.
+    """
+    cid = clinician_id.strip()
+    if not cid:
+        raise HTTPException(status_code=422, detail="clinician_id required")
+
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    pl.patient_device_id,
+                    pl.created_at AS linked_at,
+                    me.mood_score,
+                    me.mood_labels,
+                    me.risk_flags,
+                    me.event_timestamp,
+                    me.created_at AS last_mood_at
+                FROM patient_links pl
+                LEFT JOIN LATERAL (
+                    SELECT
+                        mood_score,
+                        mood_labels,
+                        risk_flags,
+                        event_timestamp,
+                        created_at
+                    FROM mood_events
+                    WHERE patient_device_id = pl.patient_device_id
+                      AND clinician_id = pl.clinician_id
+                    ORDER BY COALESCE(event_timestamp, created_at) DESC
+                    LIMIT 1
+                ) me ON true
+                WHERE pl.clinician_id = %s
+                ORDER BY
+                    COALESCE(me.event_timestamp, me.created_at, pl.created_at)
+                    DESC;
+                """,
+                (cid,),
+            )
+            rows = cur.fetchall()
+
+    patients = []
+    for row in rows:
+        linked_at = row.get("linked_at")
+        linked_at_iso = (
+            linked_at.astimezone(timezone.utc).isoformat()
+            if isinstance(linked_at, datetime) else str(linked_at)
+        )
+
+        latest_mood = None
+        if row.get("last_mood_at") is not None:
+            last_mood_at = row["last_mood_at"]
+            last_mood_iso = (
+                last_mood_at.astimezone(timezone.utc).isoformat()
+                if isinstance(last_mood_at, datetime) else str(last_mood_at)
+            )
+            evt = row.get("event_timestamp")
+            evt_iso = (
+                evt.astimezone(timezone.utc).isoformat()
+                if isinstance(evt, datetime) else None
+            )
+            mood_labels = row.get("mood_labels") or []
+            risk_flags = row.get("risk_flags") or []
+            latest_mood = {
+                "mood_score": row.get("mood_score"),
+                "mood_labels": mood_labels if isinstance(mood_labels, list) else [],
+                "risk_flags": risk_flags if isinstance(risk_flags, list) else [],
+                "event_timestamp": evt_iso,
+                "last_mood_at": last_mood_iso,
+            }
+
+        patients.append({
+            "patient_device_id": str(row["patient_device_id"]),
+            "linked_at": linked_at_iso,
+            "latest_mood": latest_mood,
+        })
+
+    return {"patients": patients, "total": len(patients)}
 
 
 @app.get("/health")
