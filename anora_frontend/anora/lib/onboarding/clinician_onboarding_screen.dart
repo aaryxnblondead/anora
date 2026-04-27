@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../clinician/clinician_shell.dart';
 import '../services/clinician_crypto_service.dart';
 import '../services/secure_link_service.dart';
 import '../services/storage_service.dart';
@@ -155,6 +156,17 @@ class _ClinicianOnboardingScreenState extends State<ClinicianOnboardingScreen> {
         );
       }
       await StorageService.instance.settingsBox.put('clinician_onboarding_complete', true);
+
+      if (!mounted || clinicianId == null || clinicianId.isEmpty) {
+        return;
+      }
+
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(
+          builder: (_) => ClinicianShell(clinicianId: clinicianId),
+        ),
+        (route) => false,
+      );
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
