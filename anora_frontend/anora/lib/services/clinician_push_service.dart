@@ -25,6 +25,34 @@ class ClinicianInboxAlertSnapshot {
   }
 }
 
+class ClinicianReportSnapshot {
+  const ClinicianReportSnapshot({
+    required this.reportId,
+    required this.clinicianId,
+    required this.lockedBox,
+    required this.createdAt,
+  });
+
+  final String reportId;
+  final String clinicianId;
+  final Map<String, dynamic> lockedBox;
+  final DateTime createdAt;
+
+  factory ClinicianReportSnapshot.fromJson(Map<String, dynamic> json) {
+    final rawLockedBox = json['locked_box'];
+    final lockedBox = rawLockedBox is Map<String, dynamic>
+        ? rawLockedBox
+        : <String, dynamic>{};
+
+    return ClinicianReportSnapshot(
+      reportId: (json['report_id'] as String?) ?? '',
+      clinicianId: (json['clinician_id'] as String?) ?? '',
+      lockedBox: lockedBox,
+      createdAt: DateTime.tryParse((json['created_at'] as String?) ?? '') ?? DateTime.now(),
+    );
+  }
+}
+
 class ClinicianMoodSnapshot {
   const ClinicianMoodSnapshot({
     required this.eventId,
@@ -117,7 +145,40 @@ class ClinicianInboxSyncService {
         .map((map) => ClinicianInboxAlertSnapshot.fromJson(Map<String, dynamic>.from(map)))
         .toList(growable: false);
   }
+}
 
+extension ClinicianInboxSyncServiceReports on ClinicianInboxSyncService {
+  Future<List<ClinicianReportSnapshot>> fetchLatestReports({
+    required String clinicianId,
+    DateTime? since,
+    int limit = 50,
+  }) async {
+    final uri = ApiEndpointService.instance.buildUri(
+      '/reports/clinician/$clinicianId',
+      queryParameters: <String, String>{
+        if (since != null) 'since': since.toUtc().toIso8601String(),
+        'limit': '$limit',
+      },
+    );
+    final response = await ApiEndpointService.instance.get(uri);
+    if (response.statusCode != 200) {
+      throw Exception('HTTP ${response.statusCode}: ${response.body}');
+    }
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      throw Exception('Unexpected report list response.');
+    }
+    final rawReports = decoded['reports'];
+    if (rawReports is! List) return const [];
+    return rawReports
+        .whereType<Map>()
+        .map((m) => ClinicianReportSnapshot.fromJson(Map<String, dynamic>.from(m)))
+        .where((s) => s.reportId.isNotEmpty)
+        .toList(growable: false);
+  }
+}
+
+extension ClinicianInboxSyncServiceMood on ClinicianInboxSyncService {
   Future<List<ClinicianMoodSnapshot>> fetchLatestMoodUpdates({
     required String clinicianId,
     int limit = 100,

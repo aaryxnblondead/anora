@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -17,6 +19,7 @@ class _ClinicianShellState extends ConsumerState<ClinicianShell>
     with WidgetsBindingObserver {
   int _currentIndex = 0;
   late final PageController _pageController;
+  Timer? _syncTimer;
 
   final List<_ClinicianNavTab> _tabs = const [
     _ClinicianNavTab(label: 'Patients', icon: Icons.people_rounded),
@@ -30,11 +33,15 @@ class _ClinicianShellState extends ConsumerState<ClinicianShell>
     _pageController = PageController();
     WidgetsBinding.instance.addObserver(this);
     _syncInboxOnResume();
+    _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      _syncInboxOnResume();
+    });
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _syncTimer?.cancel();
     _pageController.dispose();
     super.dispose();
   }
@@ -49,6 +56,7 @@ class _ClinicianShellState extends ConsumerState<ClinicianShell>
   Future<void> _syncInboxOnResume() async {
     final notifier = ref.read(clinicianReportsProvider.notifier);
     await notifier.syncEmergencyAlerts();
+    await notifier.syncLatestReports();
     await notifier.syncLatestMoodUpdates();
   }
 

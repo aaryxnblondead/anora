@@ -321,7 +321,7 @@ class _HomeContent extends StatelessWidget {
 
     final descriptor = _descriptorFor(average);
     final detail = lastSevenDays.isNotEmpty
-        ? 'Based on ${source.length} check-ins this week.'
+        ? 'Based on ${source.length} ${source.length == 1 ? 'check-in' : 'check-ins'} this week.'
         : 'Based on your recent check-ins.';
 
     return _MoodSummary(

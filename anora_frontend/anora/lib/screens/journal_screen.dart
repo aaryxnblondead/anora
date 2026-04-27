@@ -79,7 +79,13 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
       setState(() => _isAiAnalyzingLive = true);
     }
 
-    _debounce = Timer(const Duration(milliseconds: 1000), () async {
+    final wordCount = _controller.text.trim().split(RegExp(r'\s+')).where((word) => word.isNotEmpty).length;
+    if (wordCount < 5) {
+      setState(() => _isAiAnalyzingLive = false);
+      return;
+    }
+
+    _debounce = Timer(const Duration(milliseconds: 1800), () async {
       final text = _controller.text.trim();
       if (text.isEmpty) return;
 
@@ -94,7 +100,11 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
           }
         });
 
-        await _checkCrisisProtocol(text: text, riskFlags: aiResult.riskFlags);
+        await _checkCrisisProtocol(
+          text: text,
+          riskFlags: aiResult.riskFlags,
+          sentimentScore: aiResult.sentimentScore,
+        );
       } catch (_) {
         if (mounted) {
           setState(() => _isAiAnalyzingLive = false);
@@ -106,12 +116,16 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
   Future<void> _checkCrisisProtocol({
     required String text,
     required List<String> riskFlags,
+    required double sentimentScore,
   }) async {
     if (_hasTriggeredCrisisModal) return;
 
     final normalizedFlags = riskFlags.map((flag) => flag.toLowerCase()).toSet();
-    final isCritical = normalizedFlags.any(_criticalRiskAliases.contains) ||
-      _containsCriticalSelfHarmPhrase(text);
+    final hasCriticalPhrase = _containsCriticalSelfHarmPhrase(text);
+    final criticalFlagCount = normalizedFlags
+        .where(_criticalRiskAliases.contains).length;
+    final isCritical = hasCriticalPhrase ||
+        (criticalFlagCount >= 2 && sentimentScore < 0.30);
     if (!isCritical) return;
 
     _hasTriggeredCrisisModal = true;
@@ -204,6 +218,7 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
         wheelMoodScore: moodScore,
         text: text,
         aiResult: aiResult,
+        moodPath: moodPath,
       );
 
       final entry = JournalEntry(
@@ -256,19 +271,25 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
     required double wheelMoodScore,
     required String text,
     required AiInferenceResult aiResult,
+    required List<String> moodPath,
   }) {
-    final aiDominant = ((aiResult.sentimentScore * 0.85) + (wheelMoodScore * 0.15))
-        .clamp(0.0, 1.0);
-
-    final normalizedFlags = aiResult.riskFlags.map((flag) => flag.toLowerCase()).toSet();
-    final isCritical = normalizedFlags.any(_criticalRiskAliases.contains) ||
-        _containsCriticalSelfHarmPhrase(text);
-
-    if (isCritical) {
-      return aiDominant.clamp(0.0, 0.2);
+    final hasDetailedWheelSelection = moodPath.length >= 2;
+    
+    double blended;
+    if (hasDetailedWheelSelection) {
+      blended = (wheelMoodScore * 0.75) + (aiResult.sentimentScore * 0.25);
+    } else if (moodPath.length == 1) {
+      blended = (wheelMoodScore * 0.60) + (aiResult.sentimentScore * 0.40);
+    } else {
+      blended = aiResult.sentimentScore;
     }
 
-    return aiDominant;
+    final hasCriticalPhrase = _containsCriticalSelfHarmPhrase(text);
+    if (hasCriticalPhrase) {
+      return blended.clamp(0.0, 0.20);
+    }
+
+    return blended.clamp(0.0, 1.0);
   }
 
   bool _containsCriticalSelfHarmPhrase(String text) {

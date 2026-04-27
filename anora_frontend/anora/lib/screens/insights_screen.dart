@@ -100,7 +100,11 @@ class _InsightsContent extends StatelessWidget {
       });
 
       if (dayEntries.isEmpty) {
-        return _MoodPoint(dayLabel: _formatDay(day), moodScore: 0.5);
+        return _MoodPoint(
+          dayLabel: _formatDay(day),
+          moodScore: 0.5,
+          hasData: false,
+        );
       }
 
       final average = dayEntries
@@ -108,7 +112,11 @@ class _InsightsContent extends StatelessWidget {
               .reduce((a, b) => a + b) /
           dayEntries.length;
 
-      return _MoodPoint(dayLabel: _formatDay(day), moodScore: average);
+      return _MoodPoint(
+        dayLabel: _formatDay(day),
+        moodScore: average,
+        hasData: true,
+      );
     }).toList();
   }
 
@@ -140,64 +148,97 @@ class _MoodTrendCard extends StatelessWidget {
           const SizedBox(height: 12),
           SizedBox(
             height: 180,
-            child: LineChart(
-              LineChartData(
-                minX: 0,
-                maxX: points.length - 1,
-                minY: 0,
-                maxY: 1,
-                gridData: FlGridData(show: false),
-                borderData: FlBorderData(show: false),
-                lineBarsData: [
-                  LineChartBarData(
-                    spots: points
-                        .asMap()
-                        .entries
-                        .map(
-                          (entry) => FlSpot(
-                            entry.key.toDouble(),
-                            entry.value.moodScore,
-                          ),
-                        )
-                        .toList(),
-                    isCurved: true,
-                    color: lineColor,
-                    barWidth: 3,
-                    dotData: FlDotData(show: true),
-                    belowBarData: BarAreaData(
-                      show: true,
-                      color: lineColor.withValues(alpha: 0.12),
-                    ),
-                  ),
-                ],
-                titlesData: FlTitlesData(
-                  leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  bottomTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      interval: 1,
-                      getTitlesWidget: (value, _) {
-                        final index = value.toInt();
-                        if (index < 0 || index >= points.length) {
-                          return const SizedBox.shrink();
-                        }
-                        return Padding(
-                          padding: const EdgeInsets.only(top: 6),
-                          child: Text(
-                            points[index].dayLabel,
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                ),
-              ),
+            child: _buildChart(context, lineColor),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildChart(BuildContext context, Color lineColor) {
+    final spots = points.asMap().entries
+        .map(
+          (entry) => FlSpot(
+            entry.key.toDouble(),
+            entry.value.moodScore,
+          ),
+        )
+        .toList(growable: false);
+
+    if (!points.any((p) => p.hasData)) {
+      return Center(
+        child: Text(
+          'No mood data yet',
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+      );
+    }
+
+    return LineChart(
+      LineChartData(
+        minX: 0,
+        maxX: points.length - 1,
+        minY: 0,
+        maxY: 1,
+        gridData: FlGridData(show: false),
+        borderData: FlBorderData(show: false),
+        lineBarsData: [
+          LineChartBarData(
+            spots: spots,
+            isCurved: true,
+            color: lineColor,
+            barWidth: 2.5,
+            dotData: FlDotData(
+              show: true,
+              getDotPainter: (spot, percent, barData, index) {
+                final point = points[index];
+                if (!point.hasData) {
+                  return FlDotCirclePainter(
+                    radius: 3,
+                    color: Colors.transparent,
+                    strokeWidth: 1.5,
+                    strokeColor: const Color(0xFFCCC8C0),
+                  );
+                }
+                return FlDotCirclePainter(
+                  radius: 5,
+                  color: lineColor,
+                  strokeWidth: 1.5,
+                  strokeColor: Colors.white,
+                );
+              },
+            ),
+            belowBarData: BarAreaData(
+              show: true,
+              color: lineColor.withValues(alpha: 0.10),
             ),
           ),
         ],
+        titlesData: FlTitlesData(
+          leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              interval: 1,
+              getTitlesWidget: (value, _) {
+                final index = value.toInt();
+                if (index < 0 || index >= points.length) {
+                  return const SizedBox.shrink();
+                }
+                final point = points[index];
+                return Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    point.dayLabel,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -304,10 +345,15 @@ class _EntryTileState extends State<_EntryTile> {
 }
 
 class _MoodPoint {
-  const _MoodPoint({required this.dayLabel, required this.moodScore});
+  const _MoodPoint({
+    required this.dayLabel,
+    required this.moodScore,
+    required this.hasData,
+  });
 
   final String dayLabel;
   final double moodScore;
+  final bool hasData;
 }
 
 class _EmptyStateCard extends StatelessWidget {

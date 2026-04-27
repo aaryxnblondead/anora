@@ -36,10 +36,16 @@ class AiInferenceService {
   ];
 
   static const Map<String, double> _riskThresholds = <String, double>{
-    'risk_selfharm': 0.35,
-    'risk_anxiety': 0.50,
-    'risk_depression': 0.55,
-    'risk_mania': 0.60,
+    'risk_selfharm': 0.80,
+    'risk_anxiety': 0.75,
+    'risk_depression': 0.75,
+    'risk_mania': 0.78,
+  };
+
+  static const Set<String> _positiveWords = <String>{
+    'happy', 'blessed', 'thankful', 'grateful', 'wonderful', 'great',
+    'amazing', 'fantastic', 'joyful', 'love', 'peaceful', 'excited',
+    'good', 'excellent', 'beautiful', 'delighted', 'cheerful', 'content',
   };
 
   Interpreter? _interpreter;
@@ -71,12 +77,25 @@ class AiInferenceService {
   }
 
   Future<AiInferenceResult> analyze(String text) async {
+    final normalizedText = text.trim();
+    final wordCount = normalizedText.isEmpty
+        ? 0
+        : normalizedText.split(RegExp(r'\s+')).where((word) => word.isNotEmpty).length;
+    if (normalizedText.length < 10 || wordCount < 3) {
+      return const AiInferenceResult(
+        sentimentScore: 0.5,
+        riskFlags: <String>[],
+        emotionScores: <String, double>{},
+        dominantEmotion: 'neutral',
+      );
+    }
+
     final interpreter = _interpreter;
     if (interpreter == null) {
       throw StateError('AiInferenceService.init() must be called before analyze().');
     }
 
-    final encoding = TokenizerService.instance.encode(text);
+    final encoding = TokenizerService.instance.encode(normalizedText);
     final logits = List<double>.filled(11, 0.0);
     final output = <int, Object>{
       0: <List<double>>[logits],
@@ -103,11 +122,19 @@ class AiInferenceService {
         .reduce((left, right) => left.value >= right.value ? left : right)
         .key;
 
+    final positiveContext = _isPositiveContext(normalizedText);
+    final adjustedProbabilities = positiveContext
+        ? probabilities.asMap().map((i, v) =>
+            MapEntry(i, i < 7 ? v : v * 0.25)).values.toList()
+        : probabilities;
+
+    final criticalPhrase = _containsCriticalSelfHarmPhrase(normalizedText);
+
     final riskFlags = <String>[];
     for (var index = 0; index < _riskLabelOrder.length; index++) {
       final label = _riskLabelOrder[index];
       final threshold = _riskThresholds[label] ?? 0.5;
-      if (probabilities[_emotionLabels.length + index] >= threshold) {
+      if (adjustedProbabilities[_emotionLabels.length + index] >= threshold) {
         riskFlags.add(_riskLabelDisplayNames[label] ?? label);
       }
     }
@@ -115,7 +142,7 @@ class AiInferenceService {
     var sentimentScore = _deriveSentimentScore(probabilities);
 
     // Safety override: explicit self-harm language should never be interpreted as safe.
-    if (_containsCriticalSelfHarmPhrase(text)) {
+    if (criticalPhrase) {
       if (!riskFlags.contains('Self-harm')) {
         riskFlags.insert(0, 'Self-harm');
       }
@@ -174,10 +201,25 @@ class AiInferenceService {
   }
 
   double _deriveSentimentScore(List<double> probabilities) {
-    final positive = probabilities[0] + (probabilities[5] * 0.5) + (probabilities[6] * 0.35);
-    final negative = probabilities[1] + probabilities[2] + probabilities[3] + probabilities[4];
-    final score = 0.5 + ((positive - negative) * 0.5);
+    final joy = probabilities[0];
+    final surprise = probabilities[5];
+    final neutral = probabilities[6];
+    final sadness = probabilities[1];
+    final anger = probabilities[2];
+    final fear = probabilities[3];
+    final disgust = probabilities[4];
+
+    final positive = (joy * 0.80) + (surprise * 0.35) + (neutral * 0.45);
+    final negative = (sadness * 0.85) + (anger * 0.65) + (fear * 0.70) + (disgust * 0.60);
+
+    final score = 0.5 + ((positive - negative) * 0.65);
     return score.clamp(0.0, 1.0);
+  }
+
+  bool _isPositiveContext(String text) {
+    final words = text.toLowerCase().split(RegExp(r'\W+'));
+    final matchCount = words.where((w) => _positiveWords.contains(w)).length;
+    return matchCount >= 1 && !_containsCriticalSelfHarmPhrase(text);
   }
 
   bool _containsCriticalSelfHarmPhrase(String text) {

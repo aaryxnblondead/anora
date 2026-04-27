@@ -661,6 +661,61 @@ def upload_report(payload: ReportUpload) -> dict[str, str]:
     return {"report_id": report_id, "status": "stored"}
 
 
+@app.get("/reports/clinician/{clinician_id}")
+def list_reports_for_clinician(
+    clinician_id: str,
+    since: str | None = None,
+    limit: int = 50,
+) -> dict[str, list[dict[str, Any]]]:
+    safe_limit = max(1, min(int(limit), 200))
+    clinician_id_value = clinician_id.strip()
+    if not clinician_id_value:
+        raise HTTPException(status_code=422, detail="clinician_id is required")
+
+    query_parts = [
+        "SELECT id, clinician_id, locked_box, created_at",
+        "FROM reports",
+        "WHERE clinician_id = %s",
+    ]
+    params: list[Any] = [clinician_id_value]
+
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=timezone.utc)
+            query_parts.append("AND created_at > %s")
+            params.append(since_dt)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Invalid since format") from exc
+
+    query_parts.extend(["ORDER BY created_at DESC", "LIMIT %s"])
+    params.append(safe_limit)
+
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute("\n".join(query_parts), tuple(params))
+            rows = cursor.fetchall()
+
+    reports = []
+    for row in rows:
+        created_at = row.get("created_at")
+        created_at_iso = (
+            created_at.astimezone(timezone.utc).isoformat()
+            if isinstance(created_at, datetime)
+            else str(created_at)
+        )
+        reports.append({
+            "report_id": str(row["id"]),
+            "clinician_id": str(row["clinician_id"]),
+            "locked_box": row["locked_box"],
+            "created_at": created_at_iso,
+            "source_type": "report",
+        })
+
+    return {"reports": reports}
+
+
 @app.get("/reports/{report_id}")
 def get_report(report_id: str) -> dict[str, object]:
     """MVP endpoint without authentication. TODO: Add clinician JWT auth before production."""

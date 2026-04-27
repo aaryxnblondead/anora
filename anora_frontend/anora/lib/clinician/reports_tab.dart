@@ -15,7 +15,7 @@ class ReportsTab extends ConsumerWidget {
     final inboxRecords = state.inboxRecords;
     final reportCount = state.records.length;
     final decrypted = state.records.where((record) => record.isDecrypted).length;
-    final flagged = inboxRecords.where((record) {
+    final flagged = state.records.where((record) {
       final risk = record.riskFlagCounts;
       if (risk == null) return false;
       return risk.values.any((count) => count > 0);

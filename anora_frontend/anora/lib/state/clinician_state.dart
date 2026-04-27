@@ -79,6 +79,7 @@ class PatientRecord {
 
   bool get isEmergencyAlert => kind == ClinicianInboxItemKind.emergencyAlert;
   bool get isMoodUpdate => kind == ClinicianInboxItemKind.moodUpdate;
+  bool get isReport => kind == ClinicianInboxItemKind.report;
 
   PatientRecord copyWith({
     String? patientLabel,
@@ -260,6 +261,7 @@ class ClinicianReportsState {
     this.alerts = const <PatientRecord>[],
     this.unreadAlertIds = const <String>{},
     this.lastAlertSyncAt,
+    this.lastReportSyncAt,
     this.isLoading = false,
     this.error,
   });
@@ -268,6 +270,7 @@ class ClinicianReportsState {
   final List<PatientRecord> alerts;
   final Set<String> unreadAlertIds;
   final DateTime? lastAlertSyncAt;
+  final DateTime? lastReportSyncAt;
   final bool isLoading;
   final String? error;
 
@@ -276,6 +279,7 @@ class ClinicianReportsState {
     List<PatientRecord>? alerts,
     Set<String>? unreadAlertIds,
     DateTime? lastAlertSyncAt,
+    DateTime? lastReportSyncAt,
     bool? isLoading,
     String? error,
   }) {
@@ -284,6 +288,7 @@ class ClinicianReportsState {
       alerts: alerts ?? this.alerts,
       unreadAlertIds: unreadAlertIds ?? this.unreadAlertIds,
       lastAlertSyncAt: lastAlertSyncAt ?? this.lastAlertSyncAt,
+      lastReportSyncAt: lastReportSyncAt ?? this.lastReportSyncAt,
       isLoading: isLoading ?? this.isLoading,
       error: error,
     );
@@ -295,7 +300,7 @@ class ClinicianReportsState {
     return allRecords;
   }
 
-  int get unreadAlertCount => unreadAlertIds.length;
+  int get unreadAlertCount => alerts.where((alert) => alert.isUnread).length;
 }
 
 final clinicianReportsProvider =
@@ -318,6 +323,7 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
         alerts: <PatientRecord>[],
         unreadAlertIds: <String>{},
         lastAlertSyncAt: null,
+        lastReportSyncAt: null,
         isLoading: false,
         error: null,
       );
@@ -347,6 +353,7 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
       final rawAlerts = decoded['alerts'];
       final rawUnread = decoded['unreadAlertIds'];
       final rawLastSync = decoded['lastAlertSyncAt'];
+      final rawLastReportSync = decoded['lastReportSyncAt'];
 
       final records = _decodeRecordList(rawReports, includeAlerts: false);
       final alerts = _decodeRecordList(rawAlerts, includeAlerts: true)
@@ -368,11 +375,17 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
         lastAlertSyncAt = DateTime.tryParse(rawLastSync);
       }
 
+      DateTime? lastReportSyncAt;
+      if (rawLastReportSync is String) {
+        lastReportSyncAt = DateTime.tryParse(rawLastReportSync);
+      }
+
       state = state.copyWith(
         records: records,
         alerts: alerts,
         unreadAlertIds: unreadAlertIds,
         lastAlertSyncAt: lastAlertSyncAt,
+        lastReportSyncAt: lastReportSyncAt,
         isLoading: false,
         error: null,
       );
@@ -438,6 +451,97 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
     } catch (error) {
       state = state.copyWith(
         error: 'Could not sync alerts from ${ApiEndpointService.instance.baseUrl}: $error',
+      );
+    }
+  }
+
+  Future<void> syncLatestReports() async {
+    final clinicianId = (_storage.settingsBox.get('clinician_id') as String?)?.trim();
+    if (clinicianId == null || clinicianId.isEmpty) {
+      return;
+    }
+
+    try {
+      final snapshots = await ClinicianInboxSyncService.instance.fetchLatestReports(
+        clinicianId: clinicianId,
+        since: state.lastReportSyncAt,
+        limit: 50,
+      );
+
+      if (snapshots.isEmpty) {
+        state = state.copyWith(lastReportSyncAt: DateTime.now().toUtc(), error: null);
+        await _persistCache();
+        return;
+      }
+
+      final existingById = <String, PatientRecord>{
+        for (final record in state.records.where((record) => record.isReport))
+          record.reportId: record,
+      };
+
+      final preservedNonReportRecords = state.records
+          .where((record) => !record.isReport)
+          .toList(growable: true);
+
+      for (final snapshot in snapshots) {
+        final lockedBox = snapshot.lockedBox;
+        final encryptedKeyB64 = lockedBox['encrypted_key'];
+        final encryptedPayloadRaw = lockedBox['encrypted_payload'];
+        if (encryptedKeyB64 is! String || encryptedPayloadRaw is! Map<String, dynamic>) {
+          continue;
+        }
+
+        final encryptedPayload = <String, String>{};
+        for (final entry in encryptedPayloadRaw.entries) {
+          encryptedPayload[entry.key] = entry.value.toString();
+        }
+
+        final baseRecord = PatientRecord(
+          patientLabel: _defaultPatientLabel(preservedNonReportRecords.length),
+          reportId: snapshot.reportId,
+          receivedAt: snapshot.createdAt,
+          clinicianId: snapshot.clinicianId,
+          entryCount: null,
+          avgMoodScore: null,
+          riskFlagCounts: null,
+          topEmotion: null,
+          isDecrypted: false,
+          encryptedKeyB64: encryptedKeyB64,
+          encryptedPayload: encryptedPayload,
+          riskTrend: null,
+          kind: ClinicianInboxItemKind.report,
+          isUnread: false,
+          alertPriority: null,
+        );
+
+        final existing = existingById[snapshot.reportId];
+        final merged = existing == null
+            ? baseRecord
+            : baseRecord.copyWith(
+                patientLabel: existing.patientLabel,
+                isDecrypted: existing.isDecrypted,
+                entryCount: existing.entryCount,
+                avgMoodScore: existing.avgMoodScore,
+                riskFlagCounts: existing.riskFlagCounts,
+                topEmotion: existing.topEmotion,
+                riskTrend: existing.riskTrend,
+              );
+
+        existingById[snapshot.reportId] = merged;
+      }
+
+      preservedNonReportRecords.addAll(existingById.values);
+      preservedNonReportRecords.sort((a, b) => b.receivedAt.compareTo(a.receivedAt));
+
+      state = state.copyWith(
+        records: preservedNonReportRecords,
+        lastReportSyncAt: DateTime.now().toUtc(),
+        error: null,
+      );
+      await _persistCache();
+    } catch (error) {
+      state = state.copyWith(
+        error: 'Could not sync reports from ${ApiEndpointService.instance.baseUrl}: $error',
       );
     }
   }
@@ -687,6 +791,7 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
         'alerts': state.alerts.map((record) => record.toJson()).toList(growable: false),
         'unreadAlertIds': state.unreadAlertIds.toList(growable: false),
         'lastAlertSyncAt': state.lastAlertSyncAt?.toIso8601String(),
+        'lastReportSyncAt': state.lastReportSyncAt?.toIso8601String(),
       },
     );
     await _storage.settingsBox.put(_clinicianInboxCacheKey, encoded);
