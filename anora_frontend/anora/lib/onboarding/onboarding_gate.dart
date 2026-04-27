@@ -5,6 +5,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import '../clinician/clinician_shell.dart';
 import '../main.dart';
 import '../models/user_role.dart';
+import '../services/clinician_push_registration_service.dart';
 import '../services/secure_link_service.dart';
 import '../services/storage_service.dart';
 import '../state/role_controller.dart';
@@ -38,9 +39,16 @@ class _PatientOnboardingGate extends StatelessWidget {
   Widget build(BuildContext context) {
     final settingsBox = StorageService.instance.settingsBox;
     return ValueListenableBuilder<Box<dynamic>>(
-      valueListenable: settingsBox.listenable(keys: const ['patient_onboarding_complete']),
-      builder: (context, _, __) {
-        final isComplete = settingsBox.get('patient_onboarding_complete', defaultValue: false) == true;
+      valueListenable: settingsBox.listenable(
+        keys: const ['patient_onboarding_complete'],
+      ),
+      builder: (context, box, child) {
+        final isComplete =
+            settingsBox.get(
+              'patient_onboarding_complete',
+              defaultValue: false,
+            ) ==
+            true;
         if (!isComplete) {
           return const PatientOnboardingScreen();
         }
@@ -57,9 +65,17 @@ class ClinicianOnboardingGate extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final settingsBox = StorageService.instance.settingsBox;
     return ValueListenableBuilder<Box<dynamic>>(
-      valueListenable: settingsBox.listenable(keys: const ['clinician_onboarding_complete', 'clinician_id', 'clinician_jwt']),
-      builder: (context, box, __) {
-        final isComplete = box.get('clinician_onboarding_complete', defaultValue: false) == true;
+      valueListenable: settingsBox.listenable(
+        keys: const [
+          'clinician_onboarding_complete',
+          'clinician_id',
+          'clinician_jwt',
+        ],
+      ),
+      builder: (context, box, child) {
+        final isComplete =
+            box.get('clinician_onboarding_complete', defaultValue: false) ==
+            true;
         if (!isComplete) {
           return const ClinicianOnboardingScreen();
         }
@@ -81,16 +97,25 @@ class _ClinicianSessionBootstrap extends StatefulWidget {
   final String clinicianId;
 
   @override
-  State<_ClinicianSessionBootstrap> createState() => _ClinicianSessionBootstrapState();
+  State<_ClinicianSessionBootstrap> createState() =>
+      _ClinicianSessionBootstrapState();
 }
 
-class _ClinicianSessionBootstrapState extends State<_ClinicianSessionBootstrap> {
+class _ClinicianSessionBootstrapState
+    extends State<_ClinicianSessionBootstrap> {
   late final Future<void> _bootstrapFuture;
 
   @override
   void initState() {
     super.initState();
-    _bootstrapFuture = SecureLinkService.instance.ensureClinicianSessionToken(
+    _bootstrapFuture = _bootstrapClinicianSession();
+  }
+
+  Future<void> _bootstrapClinicianSession() async {
+    await SecureLinkService.instance.ensureClinicianSessionToken(
+      clinicianId: widget.clinicianId,
+    );
+    await ClinicianPushRegistrationService.instance.registerForClinician(
       clinicianId: widget.clinicianId,
     );
   }

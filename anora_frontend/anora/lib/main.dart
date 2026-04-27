@@ -12,12 +12,12 @@ import 'services/tokenizer_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   try {
     await StorageService.instance.init();
     await TokenizerService.instance.init();
     await AiInferenceService.instance.init();
-    
+
     runApp(const ProviderScope(child: AnoraApp()));
   } catch (e, stackTrace) {
     // If anything fails during boot, catch it and show a red error screen
@@ -32,7 +32,10 @@ Future<void> main() async {
               padding: const EdgeInsets.all(16),
               child: Text(
                 'FATAL BOOT ERROR:\n\n$e\n\n$stackTrace',
-                style: const TextStyle(color: Colors.redAccent, fontFamily: 'monospace'),
+                style: const TextStyle(
+                  color: Colors.redAccent,
+                  fontFamily: 'monospace',
+                ),
               ),
             ),
           ),

@@ -120,12 +120,11 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
   }) async {
     if (_hasTriggeredCrisisModal) return;
 
-    final normalizedFlags = riskFlags.map((flag) => flag.toLowerCase()).toSet();
     final hasCriticalPhrase = _containsCriticalSelfHarmPhrase(text);
-    final criticalFlagCount = normalizedFlags
-        .where(_criticalRiskAliases.contains).length;
-    final isCritical = hasCriticalPhrase ||
-        (criticalFlagCount >= 2 && sentimentScore < 0.30);
+    final normalizedFlags = riskFlags.map((flag) => flag.toLowerCase()).toSet();
+    final criticalFlagCount = normalizedFlags.where(_criticalRiskAliases.contains).length;
+    final lowSafetyScore = sentimentScore < 0.35;
+    final isCritical = hasCriticalPhrase || lowSafetyScore || criticalFlagCount >= 1;
     if (!isCritical) return;
 
     _hasTriggeredCrisisModal = true;
@@ -232,6 +231,11 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
 
       await StorageService.instance.journalBox.add(entry);
       await SecureLinkService.instance.syncMoodTelemetry(entry: entry);
+      await _checkCrisisProtocol(
+        text: text,
+        riskFlags: aiResult.riskFlags,
+        sentimentScore: aiResult.sentimentScore,
+      );
 
       if (settings.hapticsEnabled) {
         await HapticFeedback.mediumImpact();
@@ -295,9 +299,12 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
   bool _containsCriticalSelfHarmPhrase(String text) {
     final lowerText = text.toLowerCase();
     return lowerText.contains('killing myself') ||
+      lowerText.contains('feel like dying') ||
         lowerText.contains('end my life') ||
         lowerText.contains('suicide') ||
         lowerText.contains('want to die') ||
+      lowerText.contains('better off dead') ||
+      lowerText.contains('kill myself') ||
         lowerText.contains('ready to die') ||
         lowerText.contains('hurt myself');
   }

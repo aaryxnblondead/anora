@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -11,7 +12,9 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+import boto3
 import psycopg2
+from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,12 +51,192 @@ else:
 logger = logging.getLogger("anora.backend")
 logging.basicConfig(level=logging.INFO)
 
+SNS_CLIENT: Any | None = None
+
 
 def get_connection() -> psycopg2.extensions.connection:
     return psycopg2.connect(
         DATABASE_URL,
         connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
     )
+
+
+def _get_sns_client() -> Any | None:
+    global SNS_CLIENT
+
+    if SNS_CLIENT is not None:
+        return SNS_CLIENT
+
+    region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+    if not region:
+        logger.info("sns_push_disabled_missing_region")
+        return None
+
+    SNS_CLIENT = boto3.client("sns", region_name=region)
+    return SNS_CLIENT
+
+
+def _normalize_platform(platform: str) -> str:
+    normalized = platform.strip().lower()
+    if normalized in {"ios", "iphone", "ipad"}:
+        return "ios"
+    if normalized in {"android"}:
+        return "android"
+    return normalized or "ios"
+
+
+def _get_platform_application_arn(platform: str) -> str | None:
+    normalized_platform = _normalize_platform(platform)
+    if normalized_platform == "android":
+        return os.getenv("AWS_SNS_PLATFORM_APPLICATION_ARN_ANDROID", "").strip() or None
+    if normalized_platform == "ios":
+        return os.getenv("AWS_SNS_PLATFORM_APPLICATION_ARN_IOS", "").strip() or None
+    return os.getenv("AWS_SNS_PLATFORM_APPLICATION_ARN", "").strip() or None
+
+
+def _get_clinician_push_endpoints(clinician_id: str) -> list[dict[str, str]]:
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT device_token, endpoint_arn, platform
+                FROM clinician_push_endpoints
+                WHERE clinician_id = %s
+                ORDER BY last_seen_at DESC, created_at DESC;
+                """,
+                (clinician_id,),
+            )
+            rows = cursor.fetchall()
+
+    endpoints = []
+    for row in rows:
+        token = str(row.get("device_token") or "").strip()
+        endpoint_arn = str(row.get("endpoint_arn") or "").strip()
+        platform = str(row.get("platform") or "ios").strip()
+        if token and endpoint_arn:
+            endpoints.append({"device_token": token, "endpoint_arn": endpoint_arn, "platform": platform})
+    return endpoints
+
+
+def _delete_clinician_push_endpoint(clinician_id: str, device_token: str) -> None:
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM clinician_push_endpoints
+                WHERE clinician_id = %s AND device_token = %s;
+                """,
+                (clinician_id, device_token),
+            )
+
+
+def _create_or_refresh_sns_endpoint(
+    *,
+    clinician_id: str,
+    device_token: str,
+    platform: str,
+) -> str | None:
+    sns_client = _get_sns_client()
+    if sns_client is None:
+        return None
+
+    platform_application_arn = _get_platform_application_arn(platform)
+    if not platform_application_arn:
+        logger.info(
+            "sns_push_disabled_missing_platform_application_arn clinician_id=%s platform=%s",
+            clinician_id,
+            platform,
+        )
+        return None
+
+    response = sns_client.create_platform_endpoint(
+        PlatformApplicationArn=platform_application_arn,
+        Token=device_token,
+        CustomUserData=clinician_id,
+    )
+    return response.get("EndpointArn")
+
+
+def _dispatch_clinician_push_notification(
+    *,
+    clinician_id: str,
+    alert_id: str,
+    patient_device_id: str,
+    priority: str,
+) -> None:
+    sns_client = _get_sns_client()
+    if sns_client is None:
+        return
+
+    endpoints = _get_clinician_push_endpoints(clinician_id)
+    if not endpoints:
+        logger.info(
+            "sns_push_skipped_no_tokens clinician_id=%s alert_id=%s",
+            clinician_id,
+            alert_id,
+        )
+        return
+
+    message_body = json.dumps(
+        {
+            "default": "Urgent patient alert",
+            "APNS": json.dumps(
+                {
+                    "aps": {
+                        "alert": {
+                            "title": "Urgent patient alert",
+                            "body": "Open Anora to review the emergency alert.",
+                        },
+                        "sound": "default",
+                    },
+                    "event_type": "emergency_alert",
+                    "alert_id": alert_id,
+                    "clinician_id": clinician_id,
+                    "patient_device_id": patient_device_id,
+                    "priority": priority,
+                }
+            ),
+            "APNS_SANDBOX": json.dumps(
+                {
+                    "aps": {
+                        "alert": {
+                            "title": "Urgent patient alert",
+                            "body": "Open Anora to review the emergency alert.",
+                        },
+                        "sound": "default",
+                    },
+                    "event_type": "emergency_alert",
+                    "alert_id": alert_id,
+                    "clinician_id": clinician_id,
+                    "patient_device_id": patient_device_id,
+                    "priority": priority,
+                }
+            ),
+        }
+    )
+
+    for endpoint in endpoints:
+        try:
+            sns_client.publish(
+                TargetArn=endpoint["endpoint_arn"],
+                MessageStructure="json",
+                Message=message_body,
+            )
+            logger.info(
+                "sns_push_sent clinician_id=%s alert_id=%s token_suffix=%s",
+                clinician_id,
+                alert_id,
+                endpoint["device_token"][-8:],
+            )
+        except ClientError as exc:
+            logger.exception(
+                "sns_push_failed clinician_id=%s alert_id=%s",
+                clinician_id,
+                alert_id,
+            )
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            if error_code in {"EndpointDisabled", "InvalidParameter"}:
+                _delete_clinician_push_endpoint(clinician_id, endpoint["device_token"])
 
 
 def ensure_tables() -> None:
@@ -165,6 +348,23 @@ def ensure_tables() -> None:
                 """
             )
             cursor.execute(
+                """
+                                CREATE TABLE IF NOT EXISTS clinician_push_endpoints (
+                  clinician_id TEXT NOT NULL REFERENCES clinicians(clinician_id) ON DELETE CASCADE,
+                  device_token TEXT NOT NULL,
+                  platform TEXT NOT NULL DEFAULT 'flutter',
+                                    endpoint_arn TEXT,
+                  created_at TIMESTAMPTZ DEFAULT NOW(),
+                  updated_at TIMESTAMPTZ DEFAULT NOW(),
+                  last_seen_at TIMESTAMPTZ DEFAULT NOW(),
+                  UNIQUE (clinician_id, device_token)
+                );
+                """
+            )
+            cursor.execute(
+                                "CREATE INDEX IF NOT EXISTS idx_clinician_push_endpoints_clinician_id ON clinician_push_endpoints (clinician_id);"
+            )
+            cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_invite_code ON clinician_invite_codes (code);"
             )
 
@@ -251,6 +451,25 @@ class ClinicianRegistration(BaseModel):
         if not value.strip():
             raise ValueError("public_key_pem must be a non-empty string")
         return value.strip()
+
+
+class ClinicianPushTokenRegistration(BaseModel):
+    clinician_id: str = Field(min_length=1)
+    device_token: str = Field(min_length=1)
+    platform: str = Field(default="flutter")
+
+    @field_validator("clinician_id", "device_token")
+    @classmethod
+    def validate_required_string(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must be a non-empty string")
+        return value.strip()
+
+    @field_validator("platform")
+    @classmethod
+    def validate_platform(cls, value: str) -> str:
+        trimmed = value.strip()
+        return trimmed or "flutter"
 
 
 class LinkRequest(BaseModel):
@@ -377,6 +596,51 @@ def register_clinician(payload: ClinicianRegistration) -> dict[str, str]:
             )
 
     return {"clinician_id": payload.clinician_id, "status": "registered"}
+
+
+@app.post("/clinicians/push-tokens", status_code=201)
+def register_clinician_push_token(
+    payload: ClinicianPushTokenRegistration,
+) -> dict[str, str]:
+        endpoint_arn = _create_or_refresh_sns_endpoint(
+                clinician_id=payload.clinician_id,
+                device_token=payload.device_token,
+                platform=payload.platform,
+        )
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                                INSERT INTO clinician_push_endpoints (
+                  clinician_id,
+                  device_token,
+                  platform,
+                                    endpoint_arn,
+                  created_at,
+                  updated_at,
+                  last_seen_at
+                )
+                                VALUES (%s, %s, %s, %s, NOW(), NOW(), NOW())
+                ON CONFLICT (clinician_id, device_token)
+                DO UPDATE SET
+                  platform = EXCLUDED.platform,
+                                    endpoint_arn = COALESCE(EXCLUDED.endpoint_arn, clinician_push_endpoints.endpoint_arn),
+                  updated_at = NOW(),
+                  last_seen_at = NOW();
+                """,
+                                (
+                                        payload.clinician_id,
+                                        payload.device_token,
+                                        _normalize_platform(payload.platform),
+                                        endpoint_arn,
+                                ),
+            )
+
+    return {
+        "clinician_id": payload.clinician_id,
+        "device_token": payload.device_token,
+        "status": "registered",
+    }
 
 
 @app.post("/reports", status_code=201)
@@ -859,6 +1123,12 @@ def upload_emergency_alert(payload: SecurePayloadUpload) -> dict[str, str]:
         raise HTTPException(status_code=500, detail="Failed to store emergency alert")
 
     alert_id = str(row["id"])
+    _dispatch_clinician_push_notification(
+        clinician_id=payload.clinician_id,
+        alert_id=alert_id,
+        patient_device_id=payload.patient_device_id,
+        priority="high",
+    )
 
     return {"alert_id": alert_id, "status": "stored"}
 

@@ -25,6 +25,7 @@ class _ClinicianShellState extends ConsumerState<ClinicianShell>
   int _selectedIndex = 0;
   late final List<Widget> _tabs;
   Timer? _periodicSyncTimer;
+  int _lastAlertCount = 0;
 
   @override
   void initState() {
@@ -59,12 +60,26 @@ class _ClinicianShellState extends ConsumerState<ClinicianShell>
   }
 
   Future<void> _syncInboxOnResume() async {
+    final previousCount = ref.read(clinicianReportsProvider).alerts.length;
     await Future.wait([
       ref.read(linkedPatientsProvider.notifier).sync(),
       ref.read(clinicianReportsProvider.notifier).syncLatestReports(),
       ref.read(clinicianReportsProvider.notifier).syncEmergencyAlerts(),
       ref.read(clinicianReportsProvider.notifier).syncLatestMoodUpdates(),
     ]);
+    final currentState = ref.read(clinicianReportsProvider);
+    if (mounted && currentState.alerts.length > previousCount && currentState.alerts.isNotEmpty) {
+      final newest = currentState.alerts.first;
+      if (newest.isEmergencyAlert) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('New risk alert from ${newest.patientLabel}'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    }
+    _lastAlertCount = currentState.alerts.length;
   }
 
   void _onItemTapped(int index) {
