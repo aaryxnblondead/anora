@@ -71,7 +71,7 @@ class PatientsTab extends ConsumerWidget {
             Expanded(
               child: ListView.separated(
                 itemCount: state.records.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 10),
+                separatorBuilder: (_, _) => const SizedBox(height: 10),
                 itemBuilder: (context, index) {
                   final record = state.records[index];
                   return _PatientCard(record: record, notifier: notifier);
@@ -210,9 +210,18 @@ class _PatientCard extends StatelessWidget {
                   Text(record.patientLabel, style: Theme.of(context).textTheme.titleMedium),
                   const SizedBox(height: 4),
                   Text(
-                    'Report ID: ${_shortReportId(record.reportId)}',
+                    record.isMoodUpdate
+                        ? 'Latest mood update'
+                        : 'Report ID: ${_shortReportId(record.reportId)}',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
+                  if (record.isMoodUpdate && record.avgMoodScore != null) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      'Mood score ${(record.avgMoodScore! * 100).round()}%',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
                   if (record.isDecrypted && riskMap.isNotEmpty) ...[
                     const SizedBox(height: 8),
                     Wrap(

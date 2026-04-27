@@ -95,8 +95,36 @@ def ensure_tables() -> None:
                   patient_device_id TEXT NOT NULL,
                   clinician_id TEXT NOT NULL,
                   locked_box JSONB NOT NULL,
+                  mood_score DOUBLE PRECISION,
+                  mood_labels JSONB,
+                  risk_flags JSONB,
+                  event_timestamp TIMESTAMPTZ,
                   created_at TIMESTAMPTZ DEFAULT NOW()
                 );
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE mood_events
+                ADD COLUMN IF NOT EXISTS mood_score DOUBLE PRECISION;
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE mood_events
+                ADD COLUMN IF NOT EXISTS mood_labels JSONB;
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE mood_events
+                ADD COLUMN IF NOT EXISTS risk_flags JSONB;
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE mood_events
+                ADD COLUMN IF NOT EXISTS event_timestamp TIMESTAMPTZ;
                 """
             )
             cursor.execute(
@@ -224,6 +252,7 @@ class SecurePayloadUpload(BaseModel):
     patient_device_id: str = Field(min_length=1)
     clinician_id: str = Field(min_length=1)
     locked_box: dict[str, Any]
+    mood_summary: dict[str, Any] | None = None
 
     @field_validator("patient_device_id", "clinician_id")
     @classmethod
@@ -241,6 +270,61 @@ class SecurePayloadUpload(BaseModel):
             raise ValueError(
                 f"locked_box is missing required keys: {', '.join(missing)}"
             )
+        return value
+
+    @field_validator("mood_summary")
+    @classmethod
+    def validate_mood_summary(
+        cls,
+        value: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if value is None:
+            return None
+
+        # Only mood metadata is allowed; never accept journal content.
+        allowed_keys = {"timestamp", "mood_score", "mood_labels", "risk_flags"}
+        disallowed_keys = {
+            "text",
+            "journal",
+            "journal_text",
+            "entry_text",
+            "content",
+            "raw_text",
+        }
+
+        for key in value.keys():
+            key_lower = key.lower()
+            if key_lower in disallowed_keys:
+                raise ValueError("mood_summary must not include journal content")
+            if key not in allowed_keys:
+                raise ValueError(f"Unsupported mood_summary field: {key}")
+
+        timestamp = value.get("timestamp")
+        if timestamp is not None and not isinstance(timestamp, str):
+            raise ValueError("mood_summary.timestamp must be an ISO datetime string")
+
+        mood_score = value.get("mood_score")
+        if mood_score is not None and not isinstance(mood_score, (int, float)):
+            raise ValueError("mood_summary.mood_score must be numeric")
+
+        mood_labels = value.get("mood_labels")
+        if mood_labels is not None:
+            if not isinstance(mood_labels, list) or not all(
+                isinstance(item, str) for item in mood_labels
+            ):
+                raise ValueError(
+                    "mood_summary.mood_labels must be a list of strings"
+                )
+
+        risk_flags = value.get("risk_flags")
+        if risk_flags is not None:
+            if not isinstance(risk_flags, list) or not all(
+                isinstance(item, str) for item in risk_flags
+            ):
+                raise ValueError(
+                    "mood_summary.risk_flags must be a list of strings"
+                )
+
         return value
 
 
@@ -321,8 +405,143 @@ def _store_secure_event(table_name: str, payload: SecurePayloadUpload) -> str:
 
 @app.post("/telemetry/mood-events", status_code=201)
 def upload_mood_event(payload: SecurePayloadUpload) -> dict[str, str]:
-    event_id = _store_secure_event("mood_events", payload)
+    mood_summary = payload.mood_summary or {}
+    mood_score_raw = mood_summary.get("mood_score")
+    mood_score = float(mood_score_raw) if isinstance(mood_score_raw, (int, float)) else None
+
+    mood_labels_raw = mood_summary.get("mood_labels")
+    mood_labels = mood_labels_raw if isinstance(mood_labels_raw, list) else None
+
+    risk_flags_raw = mood_summary.get("risk_flags")
+    risk_flags = risk_flags_raw if isinstance(risk_flags_raw, list) else None
+
+    event_timestamp: datetime | None = None
+    timestamp_raw = mood_summary.get("timestamp")
+    if isinstance(timestamp_raw, str) and timestamp_raw.strip():
+        try:
+            event_timestamp = datetime.fromisoformat(
+                timestamp_raw.replace("Z", "+00:00")
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid mood_summary.timestamp format",
+            ) from exc
+        if event_timestamp.tzinfo is None:
+            event_timestamp = event_timestamp.replace(tzinfo=timezone.utc)
+
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO mood_events (
+                  patient_device_id,
+                  clinician_id,
+                  locked_box,
+                  mood_score,
+                  mood_labels,
+                  risk_flags,
+                  event_timestamp
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id;
+                """,
+                (
+                    payload.patient_device_id,
+                    payload.clinician_id,
+                    Json(payload.locked_box),
+                    mood_score,
+                    Json(mood_labels) if mood_labels is not None else None,
+                    Json(risk_flags) if risk_flags is not None else None,
+                    event_timestamp,
+                ),
+            )
+            row = cursor.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=500, detail="Failed to store mood event")
+
+    event_id = str(row["id"])
     return {"event_id": event_id, "status": "stored"}
+
+
+@app.get("/telemetry/mood-events/latest/{clinician_id}")
+def get_latest_mood_events(
+    clinician_id: str,
+    limit: int = 100,
+) -> dict[str, list[dict[str, Any]]]:
+    safe_limit = max(1, min(int(limit), 200))
+    clinician_id_value = clinician_id.strip()
+    if not clinician_id_value:
+        raise HTTPException(status_code=422, detail="clinician_id is required")
+
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                WITH latest AS (
+                  SELECT DISTINCT ON (patient_device_id)
+                    id,
+                    patient_device_id,
+                    clinician_id,
+                    mood_score,
+                    mood_labels,
+                    risk_flags,
+                    event_timestamp,
+                    created_at
+                  FROM mood_events
+                  WHERE clinician_id = %s
+                  ORDER BY
+                    patient_device_id,
+                    COALESCE(event_timestamp, created_at) DESC,
+                    created_at DESC
+                )
+                SELECT *
+                FROM latest
+                ORDER BY COALESCE(event_timestamp, created_at) DESC
+                LIMIT %s;
+                """,
+                (clinician_id_value, safe_limit),
+            )
+            rows = cursor.fetchall()
+
+    events: list[dict[str, Any]] = []
+    for row in rows:
+        created_at = row.get("created_at")
+        created_at_iso = (
+            created_at.astimezone(timezone.utc).isoformat()
+            if isinstance(created_at, datetime)
+            else str(created_at)
+        )
+
+        event_timestamp_raw = row.get("event_timestamp")
+        event_timestamp_iso = (
+            event_timestamp_raw.astimezone(timezone.utc).isoformat()
+            if isinstance(event_timestamp_raw, datetime)
+            else None
+        )
+
+        mood_labels_raw = row.get("mood_labels")
+        mood_labels = mood_labels_raw if isinstance(mood_labels_raw, list) else []
+
+        risk_flags_raw = row.get("risk_flags")
+        risk_flags = risk_flags_raw if isinstance(risk_flags_raw, list) else []
+
+        events.append(
+            {
+                "event_id": str(row.get("id")),
+                "patient_device_id": str(row.get("patient_device_id")),
+                "clinician_id": str(row.get("clinician_id")),
+                "mood_score": row.get("mood_score"),
+                "mood_labels": mood_labels,
+                "risk_flags": risk_flags,
+                "event_timestamp": event_timestamp_iso,
+                "created_at": created_at_iso,
+                "source_type": "mood_event",
+            }
+        )
+
+    return {"events": events}
 
 
 @app.post("/entries/share", status_code=201)

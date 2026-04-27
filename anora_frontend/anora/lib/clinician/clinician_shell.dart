@@ -47,7 +47,9 @@ class _ClinicianShellState extends ConsumerState<ClinicianShell>
   }
 
   Future<void> _syncInboxOnResume() async {
-    await ref.read(clinicianReportsProvider.notifier).syncEmergencyAlerts();
+    final notifier = ref.read(clinicianReportsProvider.notifier);
+    await notifier.syncEmergencyAlerts();
+    await notifier.syncLatestMoodUpdates();
   }
 
   void _jumpTo(int index) {

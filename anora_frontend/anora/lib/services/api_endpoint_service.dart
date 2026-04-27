@@ -17,16 +17,20 @@ class ApiEndpointService {
   int _currentUrlIndex = 0;
 
   List<String> get _baseUrls {
+    final urls = <String>{};
+
     final override = overrideBaseUrl;
     if (override != null) {
-      return <String>[override];
+      urls.add(_normalize(override));
     }
 
-    final urls = <String>{_normalize(Env.apiBaseUrl)};
+    urls.add(_normalize(Env.apiBaseUrl));
+
     final backup = Env.backupApiBaseUrl;
     if (backup != null && backup.isNotEmpty) {
       urls.add(_normalize(backup));
     }
+
     return urls.toList(growable: false);
   }
 
@@ -90,6 +94,7 @@ class ApiEndpointService {
 
   Future<http.Response> get(
     Uri uri, {
+    Map<String, String>? headers,
     Duration timeout = const Duration(seconds: 10),
   }) async {
     final candidates = _candidateUris(uri);
@@ -97,7 +102,11 @@ class ApiEndpointService {
     for (var index = 0; index < candidates.length; index++) {
       final candidate = candidates[index];
       try {
-        final response = await _requestWithRetry(() => http.get(candidate).timeout(timeout));
+        final response = await _requestWithRetry(() => http.get(candidate, headers: headers).timeout(timeout));
+        if (response.statusCode == 421 && candidate != candidates.last) {
+          _rotateBaseUrl();
+          continue;
+        }
         _currentUrlIndex = index % _baseUrls.length;
         return response;
       } catch (error) {
@@ -131,6 +140,10 @@ class ApiEndpointService {
             encoding: encoding,
           ).timeout(timeout),
         );
+        if (response.statusCode == 421 && candidate != candidates.last) {
+          _rotateBaseUrl();
+          continue;
+        }
         _currentUrlIndex = index % _baseUrls.length;
         return response;
       } catch (error) {
@@ -254,9 +267,27 @@ class ApiEndpointService {
   }
 
   String _normalize(String url) {
-    if (url.endsWith('/')) {
-      return url.substring(0, url.length - 1);
+    final trimmed = url.trim();
+    if (trimmed.isEmpty) {
+      return trimmed;
     }
-    return url;
+
+    final parsed = Uri.tryParse(trimmed);
+    if (parsed == null || parsed.host.isEmpty) {
+      return trimmed.endsWith('/') ? trimmed.substring(0, trimmed.length - 1) : trimmed;
+    }
+
+    final sanitized = Uri(
+      scheme: parsed.scheme,
+      userInfo: parsed.userInfo,
+      host: parsed.host,
+      port: parsed.hasPort ? parsed.port : null,
+      path: parsed.path,
+    ).toString();
+
+    if (sanitized.endsWith('/')) {
+      return sanitized.substring(0, sanitized.length - 1);
+    }
+    return sanitized;
   }
 }

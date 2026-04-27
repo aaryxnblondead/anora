@@ -128,6 +128,12 @@ class SecureLinkService {
       path: '/telemetry/mood-events',
       clinicianId: clinicianId,
       lockedBox: lockedBox,
+      moodSummary: <String, dynamic>{
+        'timestamp': entry.timestamp.toUtc().toIso8601String(),
+        'mood_score': entry.moodScore,
+        'mood_labels': entry.moodPath,
+        'risk_flags': entry.riskFlags,
+      },
     );
   }
 
@@ -196,6 +202,7 @@ class SecureLinkService {
     required String path,
     required String clinicianId,
     required Map<String, dynamic> lockedBox,
+    Map<String, dynamic>? moodSummary,
   }) async {
     final patientDeviceId = await _getOrCreatePatientDeviceId();
     final uri = ApiEndpointService.instance.buildUri(path);
@@ -207,6 +214,7 @@ class SecureLinkService {
           'patient_device_id': patientDeviceId,
           'clinician_id': clinicianId,
           'locked_box': lockedBox,
+          ...?(moodSummary == null ? null : {'mood_summary': moodSummary}),
         },
       ),
     );

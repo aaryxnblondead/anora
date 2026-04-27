@@ -57,6 +57,7 @@ class _ReportDetailSheetState extends State<ReportDetailSheet> {
   @override
   Widget build(BuildContext context) {
     final isEmergencyAlert = _record.isEmergencyAlert;
+    final isMoodUpdate = _record.isMoodUpdate;
     if (!_record.isDecrypted) {
       return _LockedReportView(
         isEmergencyAlert: isEmergencyAlert,
@@ -86,7 +87,14 @@ class _ReportDetailSheetState extends State<ReportDetailSheet> {
             children: [
               Text(_record.patientLabel, style: Theme.of(context).textTheme.headlineMedium),
               const SizedBox(height: 4),
-              Text(isEmergencyAlert ? 'Emergency alert' : 'Report period', style: Theme.of(context).textTheme.bodySmall),
+              Text(
+                isEmergencyAlert
+                    ? 'Emergency alert'
+                    : isMoodUpdate
+                        ? 'Live mood update'
+                        : 'Report period',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
               Text(_formatDate(_record.receivedAt), style: Theme.of(context).textTheme.bodyMedium),
               const SizedBox(height: 16),
               _SectionCard(

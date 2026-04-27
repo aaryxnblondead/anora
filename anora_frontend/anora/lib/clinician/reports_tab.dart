@@ -64,7 +64,7 @@ class ReportsTab extends ConsumerWidget {
                   )
                 : ListView.separated(
                     itemCount: inboxRecords.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    separatorBuilder: (_, _) => const SizedBox(height: 8),
                     itemBuilder: (context, index) {
                       final record = inboxRecords[index];
                       return _ReportListTile(record: record, notifier: notifier);
@@ -126,6 +126,7 @@ class _ReportListTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isEmergencyAlert = record.isEmergencyAlert;
+    final isMoodUpdate = record.isMoodUpdate;
     final score = record.avgMoodScore;
     final moodColor = _scoreColor(context, score);
 
@@ -160,7 +161,9 @@ class _ReportListTile extends StatelessWidget {
               child: Icon(
                 isEmergencyAlert
                     ? Icons.warning_rounded
-                    : record.isDecrypted
+                    : isMoodUpdate
+                        ? Icons.monitor_heart_rounded
+                        : record.isDecrypted
                         ? Icons.lock_open_rounded
                         : Icons.lock_rounded,
               ),
@@ -169,6 +172,8 @@ class _ReportListTile extends StatelessWidget {
             subtitle: Text(
               isEmergencyAlert
                   ? '${record.alertPriority ?? 'high'} priority · ${_formatDate(record.receivedAt)}'
+                  : isMoodUpdate
+                      ? 'Latest mood update · ${_formatDate(record.receivedAt)}'
                   : _formatDate(record.receivedAt),
             ),
             trailing: isEmergencyAlert

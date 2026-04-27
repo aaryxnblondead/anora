@@ -8,7 +8,7 @@ import '../services/storage_service.dart';
 
 const _clinicianInboxCacheKey = 'clinician_inbox_cache';
 
-enum ClinicianInboxItemKind { report, emergencyAlert }
+enum ClinicianInboxItemKind { report, emergencyAlert, moodUpdate }
 
 class ClinicianProfile {
   const ClinicianProfile({
@@ -54,6 +54,7 @@ class PatientRecord {
     required this.encryptedKeyB64,
     required this.encryptedPayload,
     required this.riskTrend,
+    this.patientDeviceId,
     this.kind = ClinicianInboxItemKind.report,
     this.isUnread = false,
     this.alertPriority,
@@ -71,11 +72,13 @@ class PatientRecord {
   final String? encryptedKeyB64;
   final Map<String, String>? encryptedPayload;
   final List<int>? riskTrend;
+  final String? patientDeviceId;
   final ClinicianInboxItemKind kind;
   final bool isUnread;
   final String? alertPriority;
 
   bool get isEmergencyAlert => kind == ClinicianInboxItemKind.emergencyAlert;
+  bool get isMoodUpdate => kind == ClinicianInboxItemKind.moodUpdate;
 
   PatientRecord copyWith({
     String? patientLabel,
@@ -90,6 +93,7 @@ class PatientRecord {
     String? encryptedKeyB64,
     Map<String, String>? encryptedPayload,
     List<int>? riskTrend,
+    String? patientDeviceId,
     ClinicianInboxItemKind? kind,
     bool? isUnread,
     String? alertPriority,
@@ -107,6 +111,7 @@ class PatientRecord {
       encryptedKeyB64: encryptedKeyB64 ?? this.encryptedKeyB64,
       encryptedPayload: encryptedPayload ?? this.encryptedPayload,
       riskTrend: riskTrend ?? this.riskTrend,
+      patientDeviceId: patientDeviceId ?? this.patientDeviceId,
       kind: kind ?? this.kind,
       isUnread: isUnread ?? this.isUnread,
       alertPriority: alertPriority ?? this.alertPriority,
@@ -163,9 +168,12 @@ class PatientRecord {
       encryptedKeyB64: json['encryptedKeyB64'] as String?,
       encryptedPayload: encryptedMap.isEmpty ? null : encryptedMap,
       riskTrend: trend.isEmpty ? null : trend,
-      kind: (json['kind'] as String?) == 'emergencyAlert'
-          ? ClinicianInboxItemKind.emergencyAlert
-          : ClinicianInboxItemKind.report,
+      patientDeviceId: json['patientDeviceId'] as String?,
+      kind: switch (json['kind'] as String?) {
+        'emergencyAlert' => ClinicianInboxItemKind.emergencyAlert,
+        'moodUpdate' => ClinicianInboxItemKind.moodUpdate,
+        _ => ClinicianInboxItemKind.report,
+      },
       isUnread: json['isUnread'] == true,
       alertPriority: json['alertPriority'] as String?,
     );
@@ -191,6 +199,39 @@ class PatientRecord {
     );
   }
 
+  factory PatientRecord.fromMoodSnapshot({
+    required ClinicianMoodSnapshot snapshot,
+    required String patientLabel,
+  }) {
+    final riskFlagCounts = <String, int>{};
+    for (final flag in snapshot.riskFlags) {
+      if (flag.trim().isEmpty) continue;
+      riskFlagCounts.update(flag, (value) => value + 1, ifAbsent: () => 1);
+    }
+
+    final topEmotion =
+        snapshot.moodLabels.isNotEmpty ? snapshot.moodLabels.last : null;
+
+    return PatientRecord(
+      patientLabel: patientLabel,
+      reportId: snapshot.eventId,
+      receivedAt: snapshot.eventTimestamp ?? snapshot.createdAt,
+      clinicianId: snapshot.clinicianId,
+      entryCount: 1,
+      avgMoodScore: snapshot.moodScore,
+      riskFlagCounts: riskFlagCounts,
+      topEmotion: topEmotion,
+      isDecrypted: true,
+      encryptedKeyB64: null,
+      encryptedPayload: null,
+      riskTrend: null,
+      patientDeviceId: snapshot.patientDeviceId,
+      kind: ClinicianInboxItemKind.moodUpdate,
+      isUnread: false,
+      alertPriority: null,
+    );
+  }
+
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
       'patientLabel': patientLabel,
@@ -205,6 +246,7 @@ class PatientRecord {
       'encryptedKeyB64': encryptedKeyB64,
       'encryptedPayload': encryptedPayload,
       'riskTrend': riskTrend,
+      'patientDeviceId': patientDeviceId,
       'kind': kind.name,
       'isUnread': isUnread,
       'alertPriority': alertPriority,
@@ -396,6 +438,52 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
     } catch (error) {
       state = state.copyWith(
         error: 'Could not sync alerts from ${ApiEndpointService.instance.baseUrl}: $error',
+      );
+    }
+  }
+
+  Future<void> syncLatestMoodUpdates() async {
+    final clinicianId = (_storage.settingsBox.get('clinician_id') as String?)?.trim();
+    if (clinicianId == null || clinicianId.isEmpty) {
+      return;
+    }
+
+    try {
+      final updates = await ClinicianInboxSyncService.instance.fetchLatestMoodUpdates(
+        clinicianId: clinicianId,
+        limit: 100,
+      );
+
+      final retainedRecords = state.records
+          .where((record) => !record.isMoodUpdate)
+          .toList(growable: true);
+
+      final labelsByDeviceId = <String, String>{};
+      for (final record in state.records) {
+        final deviceId = record.patientDeviceId;
+        if (deviceId == null || deviceId.trim().isEmpty) continue;
+        labelsByDeviceId[deviceId] = record.patientLabel;
+      }
+
+      final moodRecords = <PatientRecord>[];
+      for (final snapshot in updates) {
+        final patientLabel =
+            labelsByDeviceId[snapshot.patientDeviceId] ?? _labelFromDeviceId(snapshot.patientDeviceId);
+        final record = PatientRecord.fromMoodSnapshot(
+          snapshot: snapshot,
+          patientLabel: patientLabel,
+        );
+        moodRecords.add(record);
+      }
+
+      retainedRecords.addAll(moodRecords);
+      retainedRecords.sort((a, b) => b.receivedAt.compareTo(a.receivedAt));
+
+      state = state.copyWith(records: retainedRecords, error: null);
+      await _persistCache();
+    } catch (error) {
+      state = state.copyWith(
+        error: 'Could not sync latest moods from ${ApiEndpointService.instance.baseUrl}: $error',
       );
     }
   }
@@ -639,6 +727,13 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
       return 'Patient ${alphabet[index]}';
     }
     return 'Patient ${index + 1}';
+  }
+
+  String _labelFromDeviceId(String patientDeviceId) {
+    final safe = patientDeviceId.trim();
+    if (safe.isEmpty) return 'Patient';
+    final preview = safe.length <= 6 ? safe : safe.substring(0, 6);
+    return 'Patient $preview';
   }
 
   String? _extractTopEmotion(dynamic topMoodPathsRaw) {
