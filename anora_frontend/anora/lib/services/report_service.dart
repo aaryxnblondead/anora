@@ -142,11 +142,26 @@ class ReportService {
     required Map<String, dynamic> lockedBox,
     required String clinicianId,
   }) async {
-    if (clinicianId.trim().isEmpty) {
+    final normalizedClinicianId = clinicianId.trim();
+    if (normalizedClinicianId.isEmpty) {
       throw ArgumentError('clinicianId must be non-empty');
     }
 
-    // TODO: validate clinician_id against registered clinicians.
+    if (!_isLikelyClinicianId(normalizedClinicianId)) {
+      throw ArgumentError('clinicianId format is invalid');
+    }
+
+    final registeredClinicianId =
+        (StorageService.instance.settingsBox.get('clinician_id') as String?)
+            ?.trim();
+    if (registeredClinicianId != null &&
+        registeredClinicianId.isNotEmpty &&
+        registeredClinicianId != normalizedClinicianId) {
+      throw StateError(
+        'clinicianId does not match the registered clinician on this device.',
+      );
+    }
+
     final uri = ApiEndpointService.instance.buildUri('/reports');
     final response = await ApiEndpointService.instance.post(
       uri,
@@ -155,7 +170,7 @@ class ReportService {
       },
       body: jsonEncode(
         <String, dynamic>{
-          'clinician_id': clinicianId.trim(),
+          'clinician_id': normalizedClinicianId,
           'locked_box': lockedBox,
         },
       ),
@@ -176,6 +191,11 @@ class ReportService {
     }
 
     return reportId;
+  }
+
+  bool _isLikelyClinicianId(String value) {
+    final clinicianIdRegex = RegExp(r'^[a-zA-Z0-9_-]{6,64}$');
+    return clinicianIdRegex.hasMatch(value);
   }
 
   /// Syncs ONLY the mood and risk indicators of a single entry. 
@@ -245,5 +265,69 @@ class ReportService {
     final month = date.month.toString().padLeft(2, '0');
     final day = date.day.toString().padLeft(2, '0');
     return '${date.year}-$month-$day';
+  }
+
+  Future<String> generateInviteCode(String clinicianId) async {
+    if (clinicianId.trim().isEmpty) {
+      throw ArgumentError('clinicianId must be non-empty');
+    }
+
+    final uri = ApiEndpointService.instance.buildUri('/clinicians/generate-code');
+    final response = await ApiEndpointService.instance.post(
+      uri,
+      headers: const {'Content-Type': 'application/json'},
+      body: jsonEncode({'clinician_id': clinicianId}),
+    );
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ReportUploadException(response.statusCode, response.body);
+    }
+
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      throw ReportUploadException(response.statusCode, 'Invalid response format');
+    }
+
+    final code = decoded['invite_code'];
+    if (code is! String || code.isEmpty) {
+      throw ReportUploadException(response.statusCode, 'Invite code not found in response');
+    }
+
+    return code;
+  }
+
+  Future<List<Map<String, dynamic>>> fetchFeedForClinician(
+    String clinicianId, {
+    String? since,
+    int limit = 100,
+  }) async {
+    if (clinicianId.trim().isEmpty) {
+      throw ArgumentError('clinicianId must be non-empty');
+    }
+
+    final queryParameters = <String, String>{
+      'limit': limit.toString(),
+    };
+    if (since != null && since.isNotEmpty) {
+      queryParameters['since'] = since;
+    }
+
+    final uri = ApiEndpointService.instance.buildUri(
+      '/clinician/$clinicianId/feed',
+      queryParameters: queryParameters,
+    );
+
+    final response = await ApiEndpointService.instance.get(uri);
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ReportUploadException(response.statusCode, response.body);
+    }
+
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic> || decoded['feed'] is! List) {
+      throw ReportUploadException(response.statusCode, 'Invalid feed format');
+    }
+
+    return List<Map<String, dynamic>>.from(decoded['feed']);
   }
 }

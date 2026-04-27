@@ -19,20 +19,20 @@ class SettingsScreen extends ConsumerStatefulWidget {
 }
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
-  late final TextEditingController _clinicianIdController;
+  late final TextEditingController _inviteCodeController;
   bool _isLinking = false;
 
   @override
   void initState() {
     super.initState();
-    _clinicianIdController = TextEditingController(
-      text: SecureLinkService.instance.linkedClinicianId ?? '',
+    _inviteCodeController = TextEditingController(
+      text: '',
     );
   }
 
   @override
   void dispose() {
-    _clinicianIdController.dispose();
+    _inviteCodeController.dispose();
     super.dispose();
   }
 
@@ -65,12 +65,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Private Connection'),
-        content: TextField(
-          controller: _clinicianIdController,
+        content: TextFormField(
+          controller: _inviteCodeController,
           autofocus: true,
           decoration: const InputDecoration(
-            labelText: 'Clinician ID',
-            hintText: 'Enter clinician ID',
+            labelText: 'Clinician Invite Code',
+            hintText: 'Enter 6-digit code',
           ),
         ),
         actions: [
@@ -82,22 +82,27 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             onPressed: _isLinking
                 ? null
                 : () async {
-                    final id = _clinicianIdController.text.trim();
-                    if (id.isEmpty) return;
+                    final code = _inviteCodeController.text.trim();
+                    if (code.isEmpty) return;
                     setState(() => _isLinking = true);
-                    final ok = await SecureLinkService.instance.linkClinician(id);
+                    bool ok;
+                    try {
+                      ok = await SecureLinkService.instance.linkClinicianWithCode(code);
+                    } catch (_) {
+                      ok = false;
+                    }
                     if (!mounted) return;
                     setState(() => _isLinking = false);
                     if (ctx.mounted) {
                       Navigator.of(ctx).pop();
+                      _inviteCodeController.clear();
                     }
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
                         content: Text(
                           ok
                               ? 'Securely linked to your clinician.'
-                              : (SecureLinkService.instance.lastLinkError ??
-                                  'Could not link right now. Check the clinician ID and try again.'),
+                              : (SecureLinkService.instance.lastLinkError ?? 'Could not link right now. Check the code and try again.'),
                         ),
                       ),
                     );

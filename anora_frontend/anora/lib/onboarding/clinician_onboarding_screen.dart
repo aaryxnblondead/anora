@@ -149,6 +149,10 @@ class _ClinicianOnboardingScreenState extends State<ClinicianOnboardingScreen> {
         } catch (_) {
           // Keep onboarding non-blocking if backend registration is temporarily unavailable.
         }
+
+        await SecureLinkService.instance.ensureClinicianSessionToken(
+          clinicianId: clinicianId,
+        );
       }
       await StorageService.instance.settingsBox.put('clinician_onboarding_complete', true);
     } catch (error) {

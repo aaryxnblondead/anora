@@ -240,8 +240,36 @@ class _PatientCard extends StatelessWidget {
             if (!record.isDecrypted)
               OutlinedButton(
                 onPressed: () async {
+                  final confirmed = await showDialog<bool>(
+                    context: context,
+                    builder: (dialogContext) {
+                      return AlertDialog(
+                        title: const Text('Confirm patient consent'),
+                        content: const Text(
+                          'Confirm that patient consent is recorded before decrypting this report.',
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.of(dialogContext).pop(false),
+                            child: const Text('Cancel'),
+                          ),
+                          FilledButton(
+                            onPressed: () => Navigator.of(dialogContext).pop(true),
+                            child: const Text('Confirm'),
+                          ),
+                        ],
+                      );
+                    },
+                  );
+                  if (confirmed != true) {
+                    return;
+                  }
+
                   try {
-                    await notifier.decryptRecord(record.reportId);
+                    await notifier.decryptRecord(
+                      record.reportId,
+                      consentGranted: true,
+                    );
                     if (!context.mounted) return;
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('Report decrypted.')),

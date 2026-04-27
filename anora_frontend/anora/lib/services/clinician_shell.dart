@@ -1,9 +1,9 @@
 import 'package:anora/services/report_service.dart';
+import 'package:anora/clinician/patient_feed_tab.dart';
+import 'package:anora/clinician/patient_list_tab.dart';
+import 'package:anora/clinician/clinician_settings_tab.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'patient_feed_tab.dart';
-import 'patient_list_tab.dart';
-import 'clinician_settings_tab.dart';
 
 class ClinicianShell extends StatefulWidget {
   final String clinicianId;
@@ -91,11 +91,14 @@ class _ClinicianShellState extends State<ClinicianShell> {
               ]
             : null,
       ),
-      body: IndexedStack(index: _selectedIndex, children: _tabs),
+      body: IndexedStack(
+        index: _selectedIndex,
+        children: _tabs,
+      ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _selectedIndex,
         onTap: _onItemTapped,
-        items: const [
+        items: const <BottomNavigationBarItem>[
           BottomNavigationBarItem(icon: Icon(Icons.dashboard), label: 'Patients'),
           BottomNavigationBarItem(icon: Icon(Icons.feed), label: 'Updates'),
           BottomNavigationBarItem(icon: Icon(Icons.settings), label: 'Settings'),

@@ -30,9 +30,18 @@ class _ReportDetailSheetState extends State<ReportDetailSheet> {
 
   Future<void> _decryptNow() async {
     if (_decrypting) return;
+
+    final consentGiven = await _confirmPatientConsent();
+    if (!consentGiven) {
+      return;
+    }
+
     setState(() => _decrypting = true);
     try {
-      await widget.notifier.decryptRecord(_record.reportId);
+      await widget.notifier.decryptRecord(
+        _record.reportId,
+        consentGranted: true,
+      );
       if (!mounted) return;
       _refreshFromNotifier();
     } catch (error) {
@@ -45,6 +54,32 @@ class _ReportDetailSheetState extends State<ReportDetailSheet> {
         setState(() => _decrypting = false);
       }
     }
+  }
+
+  Future<bool> _confirmPatientConsent() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Confirm patient consent'),
+          content: const Text(
+            'Confirm that patient consent is recorded before decrypting this report.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Confirm'),
+            ),
+          ],
+        );
+      },
+    );
+
+    return confirmed == true;
   }
 
   void _refreshFromNotifier() {

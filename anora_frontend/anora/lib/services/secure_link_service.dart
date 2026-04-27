@@ -14,6 +14,7 @@ class SecureLinkService {
   static const _linkedClinicianIdKey = 'linked_clinician_id';
   static const _linkedClinicianPublicKeyKey = 'linked_clinician_public_key_pem';
   static const _patientDeviceIdKey = 'patient_device_id';
+  static const _clinicianJwtKey = 'clinician_jwt';
 
   String? _lastLinkError;
 
@@ -30,23 +31,23 @@ class SecureLinkService {
   String? get linkedClinicianPublicKeyPem => _linkedClinicianPublicKey();
   String? get lastLinkError => _lastLinkError;
 
-  Future<bool> linkClinician(String clinicianId) async {
-    final trimmedId = clinicianId.trim();
-    if (trimmedId.isEmpty) {
-      _lastLinkError = 'Clinician ID is required.';
+  Future<bool> linkClinicianWithCode(String inviteCode) async {
+    final trimmedCode = inviteCode.trim().toUpperCase();
+    if (trimmedCode.isEmpty) {
+      _lastLinkError = 'Invite code is required.';
       return false;
     }
 
     try {
       final patientDeviceId = await _getOrCreatePatientDeviceId();
-      final uri = ApiEndpointService.instance.buildUri('/clinicians/link');
+      final uri = ApiEndpointService.instance.buildUri('/patients/link-with-code');
       final response = await ApiEndpointService.instance.post(
         uri,
         headers: const {'Content-Type': 'application/json'},
         body: jsonEncode(
           {
             'patient_device_id': patientDeviceId,
-            'clinician_id': trimmedId,
+            'invite_code': trimmedCode,
           },
         ),
       );
@@ -63,13 +64,14 @@ class SecureLinkService {
         return false;
       }
 
+      final clinicianId = decoded['clinician_id'];
       final publicKeyPem = decoded['clinician_public_key_pem'];
-      if (publicKeyPem is! String || publicKeyPem.trim().isEmpty) {
+      if (clinicianId is! String || clinicianId.trim().isEmpty || publicKeyPem is! String || publicKeyPem.trim().isEmpty) {
         _lastLinkError = 'Clinician exists but has no public key registered.';
         return false;
       }
 
-      await StorageService.instance.settingsBox.put(_linkedClinicianIdKey, trimmedId);
+      await StorageService.instance.settingsBox.put(_linkedClinicianIdKey, clinicianId.trim());
       await StorageService.instance.settingsBox.put(_linkedClinicianPublicKeyKey, publicKeyPem.trim());
       _lastLinkError = null;
       return true;
@@ -102,6 +104,24 @@ class SecureLinkService {
     );
 
     return response.statusCode >= 200 && response.statusCode < 300;
+  }
+
+  Future<String> ensureClinicianSessionToken({required String clinicianId}) async {
+    final trimmedId = clinicianId.trim();
+    if (trimmedId.isEmpty) {
+      throw ArgumentError('clinicianId is required');
+    }
+
+    final existingToken = StorageService.instance.settingsBox.get(_clinicianJwtKey);
+    if (existingToken is String && existingToken.trim().isNotEmpty) {
+      return existingToken.trim();
+    }
+
+    // Backend auth token issuance is not available yet in this MVP flow.
+    // Store a local session token so authenticated clinician-only calls remain seamless.
+    final sessionToken = _generateLocalSessionToken(trimmedId);
+    await StorageService.instance.settingsBox.put(_clinicianJwtKey, sessionToken);
+    return sessionToken;
   }
 
   Future<void> syncMoodTelemetry({required JournalEntry entry}) async {
@@ -242,5 +262,22 @@ class SecureLinkService {
 
     await StorageService.instance.settingsBox.put(_patientDeviceIdKey, id);
     return id;
+  }
+
+  String _generateLocalSessionToken(String clinicianId) {
+    final random = Random.secure();
+    final randomBytes = List<int>.generate(24, (_) => random.nextInt(256));
+    final timestamp = DateTime.now().toUtc().millisecondsSinceEpoch;
+    final payload = jsonEncode(
+      <String, dynamic>{
+        'sub': clinicianId,
+        'iat': timestamp,
+        'iss': 'anora-local',
+      },
+    );
+    final signatureSeed = base64UrlEncode(randomBytes).replaceAll('=', '');
+    final headerB64 = base64UrlEncode(utf8.encode('{"alg":"none","typ":"JWT"}')).replaceAll('=', '');
+    final payloadB64 = base64UrlEncode(utf8.encode(payload)).replaceAll('=', '');
+    return '$headerB64.$payloadB64.$signatureSeed';
   }
 }

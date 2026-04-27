@@ -7,6 +7,8 @@ import '../services/clinician_push_service.dart';
 import '../services/storage_service.dart';
 
 const _clinicianInboxCacheKey = 'clinician_inbox_cache';
+const _decryptedAccessTimesKey = 'clinician_decrypted_access_times';
+const _decryptedAccessTtl = Duration(hours: 24);
 
 enum ClinicianInboxItemKind { report, emergencyAlert, moodUpdate }
 
@@ -311,6 +313,7 @@ final clinicianReportsProvider =
 class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
   ClinicianReportsNotifier(this._storage) : super(const ClinicianReportsState()) {
     loadFromLocalCache();
+    Future.microtask(_expireDecryptedRecordsIfNeeded);
   }
 
   final StorageService _storage;
@@ -599,12 +602,27 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
       return;
     }
 
+    final clinicianJwt = (_storage.settingsBox.get('clinician_jwt') as String?)?.trim();
+    if (clinicianJwt == null || clinicianJwt.isEmpty) {
+      state = state.copyWith(error: 'Clinician session token is missing. Please sign in again.');
+      return;
+    }
+
+    final registeredClinicianId =
+        (_storage.settingsBox.get('clinician_id') as String?)?.trim();
+    if (registeredClinicianId == null || registeredClinicianId.isEmpty) {
+      state = state.copyWith(error: 'Clinician ID is missing on this device.');
+      return;
+    }
+
     state = state.copyWith(isLoading: true, error: null);
 
     try {
-      // TODO: Enforce clinician JWT auth on GET /reports backend endpoint.
       final response = await ApiEndpointService.instance.get(
         ApiEndpointService.instance.buildUri('/reports/$id'),
+        headers: <String, String>{
+          'Authorization': 'Bearer $clinicianJwt',
+        },
       );
       if (response.statusCode != 200) {
         throw Exception('HTTP ${response.statusCode}: ${response.body}');
@@ -633,8 +651,10 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
         encryptedPayload[entry.key] = entry.value.toString();
       }
 
-      final clinicianId = (body['clinician_id'] as String?) ??
-          ((_storage.settingsBox.get('clinician_id') as String?) ?? '');
+      final clinicianId = ((body['clinician_id'] as String?) ?? '').trim();
+      if (clinicianId.isEmpty || clinicianId != registeredClinicianId) {
+        throw Exception('Report clinician ID does not match the signed-in clinician.');
+      }
       final receivedAt = DateTime.tryParse((body['created_at'] as String?) ?? '') ?? DateTime.now();
 
       final existingIndex = state.records.indexWhere((record) => record.reportId == id);
@@ -690,7 +710,12 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
     }
   }
 
-  Future<void> decryptRecord(String reportId) async {
+  Future<void> decryptRecord(String reportId, {required bool consentGranted}) async {
+    if (!consentGranted) {
+      state = state.copyWith(error: 'Patient consent is required before decrypting a report.');
+      throw Exception('Patient consent is required before decrypting a report.');
+    }
+
     state = state.copyWith(isLoading: true, error: null);
     try {
       final index = state.records.indexWhere((record) => record.reportId == reportId);
@@ -705,7 +730,6 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
         throw Exception('Encrypted payload is unavailable for this report.');
       }
 
-      // TODO: Add patient consent confirmation before decrypting each report.
       final decryptedJson = ClinicianCryptoService.instance.decryptReportPayload(
         encryptedKeyB64: encryptedKey,
         encryptedPayload: encryptedPayload,
@@ -743,13 +767,30 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
       updated.sort((a, b) => b.receivedAt.compareTo(a.receivedAt));
 
       state = state.copyWith(records: updated, isLoading: false, error: null);
+      final accessTimes = _loadDecryptedAccessTimes();
+      accessTimes[reportId] = DateTime.now().toUtc();
+      await _saveDecryptedAccessTimes(accessTimes);
       await _persistCache();
-
-      // TODO: Add expiry/revocation policy for locally decrypted report access.
     } catch (error) {
       state = state.copyWith(isLoading: false, error: 'Failed to decrypt report: $error');
       rethrow;
     }
+  }
+
+  Future<void> revokeDecryptedRecordAccess(String reportId) async {
+    final trimmedId = reportId.trim();
+    if (trimmedId.isEmpty) return;
+
+    final updatedRecords = state.records
+        .map((record) => record.reportId == trimmedId ? _lockRecord(record) : record)
+        .toList(growable: false);
+
+    final accessTimes = _loadDecryptedAccessTimes();
+    accessTimes.remove(trimmedId);
+
+    state = state.copyWith(records: updatedRecords, error: null);
+    await _saveDecryptedAccessTimes(accessTimes);
+    await _persistCache();
   }
 
   Future<void> addManualPatientLabel(String reportId, String label) async {
@@ -866,5 +907,78 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
       }
     }
     return values.isEmpty ? null : values;
+  }
+
+  Future<void> _expireDecryptedRecordsIfNeeded() async {
+    final now = DateTime.now().toUtc();
+    final accessTimes = _loadDecryptedAccessTimes();
+    var recordsChanged = false;
+    var timesChanged = false;
+
+    final updatedRecords = state.records.map((record) {
+      if (!record.isDecrypted) {
+        return record;
+      }
+
+      final decryptedAt = accessTimes[record.reportId] ?? record.receivedAt.toUtc();
+      if (!accessTimes.containsKey(record.reportId)) {
+        accessTimes[record.reportId] = decryptedAt;
+        timesChanged = true;
+      }
+
+      if (now.difference(decryptedAt) <= _decryptedAccessTtl) {
+        return record;
+      }
+
+      accessTimes.remove(record.reportId);
+      timesChanged = true;
+      recordsChanged = true;
+      return _lockRecord(record);
+    }).toList(growable: false);
+
+    if (recordsChanged) {
+      state = state.copyWith(records: updatedRecords, error: null);
+      await _persistCache();
+    }
+
+    if (timesChanged) {
+      await _saveDecryptedAccessTimes(accessTimes);
+    }
+  }
+
+  PatientRecord _lockRecord(PatientRecord record) {
+    return record.copyWith(
+      isDecrypted: false,
+      entryCount: null,
+      avgMoodScore: null,
+      riskFlagCounts: null,
+      topEmotion: null,
+      riskTrend: null,
+    );
+  }
+
+  Map<String, DateTime> _loadDecryptedAccessTimes() {
+    final raw = _storage.settingsBox.get(_decryptedAccessTimesKey);
+    if (raw is! Map) {
+      return <String, DateTime>{};
+    }
+
+    final decoded = <String, DateTime>{};
+    for (final entry in raw.entries) {
+      final key = entry.key;
+      final value = entry.value;
+      if (key is! String || value is! String) continue;
+      final parsed = DateTime.tryParse(value);
+      if (parsed == null) continue;
+      decoded[key] = parsed.toUtc();
+    }
+    return decoded;
+  }
+
+  Future<void> _saveDecryptedAccessTimes(Map<String, DateTime> value) async {
+    final encoded = <String, String>{
+      for (final entry in value.entries) entry.key: entry.value.toUtc().toIso8601String(),
+    };
+    await _storage.settingsBox.put(_decryptedAccessTimesKey, encoded);
   }
 }

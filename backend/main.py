@@ -3,8 +3,10 @@ from __future__ import annotations
 import logging
 import os
 import time
+import random
+import string
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -150,6 +152,21 @@ def ensure_tables() -> None:
                 );
                 """
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS clinician_invite_codes (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    clinician_id TEXT NOT NULL REFERENCES clinicians(clinician_id),
+                    code TEXT NOT NULL UNIQUE,
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    used_at TIMESTAMPTZ
+                );
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_invite_code ON clinician_invite_codes (code);"
+            )
 
 
 def initialize_database_with_retries() -> None:
@@ -246,6 +263,23 @@ class LinkRequest(BaseModel):
         if not value.strip():
             raise ValueError("must be a non-empty string")
         return value.strip()
+
+
+class ClinicianIdPayload(BaseModel):
+    clinician_id: str = Field(min_length=1)
+
+
+class PatientLinkRequest(BaseModel):
+    patient_device_id: str = Field(min_length=1)
+    invite_code: str = Field(min_length=6, max_length=6)
+
+    @field_validator("patient_device_id", "invite_code")
+    @classmethod
+    def validate_non_empty(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must be a non-empty string")
+        return stripped
 
 
 class SecurePayloadUpload(BaseModel):
@@ -345,38 +379,77 @@ def register_clinician(payload: ClinicianRegistration) -> dict[str, str]:
     return {"clinician_id": payload.clinician_id, "status": "registered"}
 
 
-@app.post("/clinicians/link", status_code=201)
-def link_patient_to_clinician(payload: LinkRequest) -> dict[str, str | bool]:
+@app.post("/clinicians/generate-code", status_code=201)
+def generate_invite_code(payload: ClinicianIdPayload) -> dict[str, str]:
+    """Generates a single-use invite code for a clinician."""
+    clinician_id = payload.clinician_id.strip()
+    if not clinician_id:
+        raise HTTPException(status_code=422, detail="clinician_id is required")
+
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute("SELECT 1 FROM clinicians WHERE clinician_id = %s;", (clinician_id,))
+            if cursor.fetchone() is None:
+                raise HTTPException(status_code=404, detail="Clinician not found")
+
+            # Generate a unique 6-character alphanumeric code
+            while True:
+                code = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+                cursor.execute("SELECT 1 FROM clinician_invite_codes WHERE code = %s AND expires_at > NOW();", (code,))
+                if cursor.fetchone() is None:
+                    break
+            
+            expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+            
+            cursor.execute(
+                """
+                INSERT INTO clinician_invite_codes (clinician_id, code, expires_at)
+                VALUES (%s, %s, %s);
+                """,
+                (clinician_id, code, expires_at),
+            )
+    
+    return {"invite_code": code, "expires_at": expires_at.isoformat()}
+
+
+@app.post("/patients/link-with-code", status_code=201)
+def link_patient_with_invite_code(payload: PatientLinkRequest) -> dict[str, Any]:
+    """Links a patient to a clinician using a single-use invite code."""
+    invite_code = payload.invite_code.upper()
     with get_connection() as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
-                """
-                SELECT clinician_id, public_key_pem
-                FROM clinicians
-                WHERE clinician_id = %s;
-                """,
-                (payload.clinician_id,),
+                "SELECT clinician_id, expires_at, used_at FROM clinician_invite_codes WHERE code = %s;",
+                (invite_code,),
             )
+            invite = cursor.fetchone()
+
+            if invite is None:
+                raise HTTPException(status_code=404, detail="Invalid invite code.")
+            if invite["used_at"] is not None:
+                raise HTTPException(status_code=410, detail="Invite code has already been used.")
+            if invite["expires_at"] < datetime.now(timezone.utc):
+                raise HTTPException(status_code=410, detail="Invite code has expired.")
+
+            clinician_id = invite["clinician_id"]
+            
+            cursor.execute("SELECT public_key_pem FROM clinicians WHERE clinician_id = %s;", (clinician_id,))
             clinician = cursor.fetchone()
+            if clinician is None or not clinician["public_key_pem"]:
+                raise HTTPException(status_code=404, detail="Clinician not found or has no public key.")
 
-            if clinician is None:
-                raise HTTPException(status_code=404, detail="Clinician not found")
-
+            # Mark code as used and create the link
+            cursor.execute("UPDATE clinician_invite_codes SET used_at = NOW() WHERE code = %s;", (invite_code,))
             cursor.execute(
-                """
-                INSERT INTO patient_links (patient_device_id, clinician_id)
-                VALUES (%s, %s)
-                ON CONFLICT (patient_device_id, clinician_id)
-                DO NOTHING;
-                """,
-                (payload.patient_device_id, payload.clinician_id),
+                "INSERT INTO patient_links (patient_device_id, clinician_id) VALUES (%s, %s) ON CONFLICT (patient_device_id, clinician_id) DO NOTHING;",
+                (payload.patient_device_id, clinician_id),
             )
 
     return {
         "linked": True,
         "status": "securely_linked",
-        "clinician_id": payload.clinician_id,
-        "clinician_public_key_pem": str(clinician["public_key_pem"]),
+        "clinician_id": clinician_id,
+        "clinician_public_key_pem": clinician["public_key_pem"],
     }
 
 
@@ -542,6 +615,97 @@ def get_latest_mood_events(
         )
 
     return {"events": events}
+
+
+@app.get("/clinician/{clinician_id}/feed")
+def get_clinician_feed(
+    clinician_id: str,
+    since: str | None = None,
+    limit: int = 100,
+) -> dict[str, list[dict[str, Any]]]:
+    """Fetches a consolidated, chronological feed of events for a clinician."""
+    safe_limit = max(1, min(int(limit), 500))
+    clinician_id_value = clinician_id.strip()
+    if not clinician_id_value:
+        raise HTTPException(status_code=422, detail="clinician_id is required")
+
+    # Base parameters and WHERE clauses for all subqueries
+    query_params: list[Any] = [clinician_id_value]
+    where_clauses = ["clinician_id = %s"]
+
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=timezone.utc)
+            where_clauses.append("created_at > %s")
+            query_params.append(since_dt)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Invalid since format") from exc
+
+    full_where_clause = " AND ".join(where_clauses)
+
+    # The same set of parameters will be used for each of the three UNIONed SELECTs
+    final_params = query_params * 3 + [safe_limit]
+
+    query = f"""
+        (
+            SELECT
+                id, patient_device_id, clinician_id, locked_box,
+                mood_score, mood_labels, risk_flags, event_timestamp, created_at,
+                'mood_event' AS source_type
+            FROM mood_events
+            WHERE {full_where_clause}
+        )
+        UNION ALL
+        (
+            SELECT
+                id, patient_device_id, clinician_id, locked_box,
+                NULL AS mood_score, NULL AS mood_labels, NULL AS risk_flags,
+                NULL AS event_timestamp, created_at,
+                'shared_entry' AS source_type
+            FROM shared_entries
+            WHERE {full_where_clause}
+        )
+        UNION ALL
+        (
+            SELECT
+                id, patient_device_id, clinician_id, locked_box,
+                NULL AS mood_score, NULL AS mood_labels, NULL AS risk_flags,
+                NULL AS event_timestamp, created_at,
+                'emergency_alert' AS source_type
+            FROM emergency_alerts
+            WHERE {full_where_clause}
+        )
+        ORDER BY COALESCE(event_timestamp, created_at) DESC
+        LIMIT %s;
+    """
+
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(query, tuple(final_params))
+            rows = cursor.fetchall()
+
+    feed_items: list[dict[str, Any]] = []
+    for row in rows:
+        created_at = row["created_at"]
+        created_at_iso = (
+            created_at.astimezone(timezone.utc).isoformat()
+            if isinstance(created_at, datetime)
+            else str(created_at)
+        )
+
+        event_timestamp_raw = row.get("event_timestamp")
+        event_timestamp_iso = (
+            event_timestamp_raw.astimezone(timezone.utc).isoformat()
+            if isinstance(event_timestamp_raw, datetime)
+            else None
+        )
+
+        item = {**row, "id": str(row["id"]), "created_at": created_at_iso, "event_timestamp": event_timestamp_iso}
+        feed_items.append(item)
+
+    return {"feed": feed_items}
 
 
 @app.post("/entries/share", status_code=201)
