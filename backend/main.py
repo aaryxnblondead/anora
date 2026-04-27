@@ -602,38 +602,39 @@ def register_clinician(payload: ClinicianRegistration) -> dict[str, str]:
 def register_clinician_push_token(
     payload: ClinicianPushTokenRegistration,
 ) -> dict[str, str]:
-        endpoint_arn = _create_or_refresh_sns_endpoint(
-                clinician_id=payload.clinician_id,
-                device_token=payload.device_token,
-                platform=payload.platform,
-        )
+    endpoint_arn = _create_or_refresh_sns_endpoint(
+        clinician_id=payload.clinician_id,
+        device_token=payload.device_token,
+        platform=payload.platform,
+    )
+
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                                INSERT INTO clinician_push_endpoints (
+                INSERT INTO clinician_push_endpoints (
                   clinician_id,
                   device_token,
                   platform,
-                                    endpoint_arn,
+                  endpoint_arn,
                   created_at,
                   updated_at,
                   last_seen_at
                 )
-                                VALUES (%s, %s, %s, %s, NOW(), NOW(), NOW())
+                VALUES (%s, %s, %s, %s, NOW(), NOW(), NOW())
                 ON CONFLICT (clinician_id, device_token)
                 DO UPDATE SET
                   platform = EXCLUDED.platform,
-                                    endpoint_arn = COALESCE(EXCLUDED.endpoint_arn, clinician_push_endpoints.endpoint_arn),
+                  endpoint_arn = COALESCE(EXCLUDED.endpoint_arn, clinician_push_endpoints.endpoint_arn),
                   updated_at = NOW(),
                   last_seen_at = NOW();
                 """,
-                                (
-                                        payload.clinician_id,
-                                        payload.device_token,
-                                        _normalize_platform(payload.platform),
-                                        endpoint_arn,
-                                ),
+                (
+                    payload.clinician_id,
+                    payload.device_token,
+                    _normalize_platform(payload.platform),
+                    endpoint_arn,
+                ),
             )
 
     return {
