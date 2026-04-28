@@ -1257,7 +1257,8 @@ def get_linked_patients(clinician_id: str) -> dict[str, Any]:
                     me.mood_labels,
                     me.risk_flags,
                     me.event_timestamp,
-                    me.created_at AS last_mood_at
+                    me.created_at AS last_mood_at,
+                    mh.mood_history
                 FROM patient_links pl
                 LEFT JOIN LATERAL (
                     SELECT
@@ -1269,9 +1270,24 @@ def get_linked_patients(clinician_id: str) -> dict[str, Any]:
                     FROM mood_events
                     WHERE patient_device_id = pl.patient_device_id
                       AND clinician_id = pl.clinician_id
+                      AND mood_score IS NOT NULL
                     ORDER BY COALESCE(event_timestamp, created_at) DESC
                     LIMIT 1
                 ) me ON true
+                LEFT JOIN LATERAL (
+                    SELECT jsonb_agg(history.mood_score ORDER BY history.order_key ASC) AS mood_history
+                    FROM (
+                        SELECT
+                            mood_score,
+                            COALESCE(event_timestamp, created_at) AS order_key
+                        FROM mood_events
+                        WHERE patient_device_id = pl.patient_device_id
+                          AND clinician_id = pl.clinician_id
+                          AND mood_score IS NOT NULL
+                        ORDER BY COALESCE(event_timestamp, created_at) DESC
+                        LIMIT 7
+                    ) history
+                ) mh ON true
                 WHERE pl.clinician_id = %s
                 ORDER BY
                     COALESCE(me.event_timestamp, me.created_at, pl.created_at)
@@ -1311,10 +1327,18 @@ def get_linked_patients(clinician_id: str) -> dict[str, Any]:
                 "last_mood_at": last_mood_iso,
             }
 
+        mood_history = row.get("mood_history")
+        mood_history_values: list[float] = []
+        if isinstance(mood_history, list):
+            for value in mood_history:
+                if isinstance(value, (int, float)):
+                    mood_history_values.append(float(value))
+
         patients.append({
             "patient_device_id": str(row["patient_device_id"]),
             "linked_at": linked_at_iso,
             "latest_mood": latest_mood,
+            "mood_history": mood_history_values,
         })
 
     return {"patients": patients, "total": len(patients)}

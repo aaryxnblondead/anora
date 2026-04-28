@@ -150,6 +150,9 @@ class _PatientCard extends ConsumerWidget {
     final mood = patient.latestMood;
     final hasRisk = mood?.hasRiskFlags == true;
     final moodScore = mood?.moodScore;
+    final trendPoints = patient.moodHistory.isNotEmpty
+      ? patient.moodHistory
+      : (moodScore != null ? <double>[moodScore] : const <double>[]);
 
     Color? accent;
     if (hasRisk) {
@@ -182,84 +185,171 @@ class _PatientCard extends ConsumerWidget {
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: const Color(0xFFE0DED7)),
       ),
-      child: Container(
-        decoration: BoxDecoration(
-          border: accent == null
-              ? null
-              : Border(left: BorderSide(color: accent, width: 3.5)),
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: ListTile(
-          leading: CircleAvatar(
-            backgroundColor: const Color(0xFFF1F0EB),
-            child: Text(initials),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onLongPress: () => _showRenameDialog(context, ref, patient),
+        child: Container(
+          decoration: BoxDecoration(
+            border: accent == null
+                ? null
+                : Border(left: BorderSide(color: accent, width: 3.5)),
+            borderRadius: BorderRadius.circular(14),
           ),
-          title: Text(
-            patient.patientLabel,
-            style: const TextStyle(fontWeight: FontWeight.w600),
-          ),
-          subtitle: Column(
+          padding: const EdgeInsets.all(14),
+          child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SizedBox(height: 4),
-              if (labels.isNotEmpty)
-                Text(labels.join(' · '))
-              else
-                Text(
-                  'No mood data yet',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        fontStyle: FontStyle.italic,
-                      ),
-                ),
-              if (flags.isNotEmpty) ...[
-                const SizedBox(height: 6),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: flags
-                      .map(
-                        (flag) => Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFE38B7C),
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                          child: Text(
-                            flag,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 11,
+              CircleAvatar(
+                backgroundColor: const Color(0xFFF1F0EB),
+                child: Text(initials),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      patient.patientLabel,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 4),
+                    if (labels.isNotEmpty)
+                      Text(labels.join(' · '))
+                    else
+                      Text(
+                        'No mood data yet',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              fontStyle: FontStyle.italic,
                             ),
-                          ),
+                      ),
+                    if (flags.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: flags
+                            .map(
+                              (flag) => Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFE38B7C),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Text(
+                                  flag,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ),
+                            )
+                            .toList(growable: false),
+                      ),
+                    ],
+                    const SizedBox(height: 8),
+                    Text(relative, style: Theme.of(context).textTheme.bodySmall),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              SizedBox(
+                width: 102,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    if (patient.hasMoodData)
+                      Text(
+                        '${((mood?.moodScore ?? 0) * 100).round()}%',
+                        style: TextStyle(
+                          color: moodColor,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 16,
                         ),
                       )
-                      .toList(growable: false),
+                    else
+                      const Text(
+                        'No data',
+                        style: TextStyle(color: Color(0xFFB0A898), fontSize: 12),
+                      ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      height: 30,
+                      child: _MoodSparkline(
+                        points: trendPoints,
+                        color: moodColor,
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-              const SizedBox(height: 6),
-              Text(relative, style: Theme.of(context).textTheme.bodySmall),
+              ),
             ],
           ),
-          trailing: patient.hasMoodData
-              ? Text(
-                  '${((mood?.moodScore ?? 0) * 100).round()}%',
-                  style: TextStyle(
-                    color: moodColor,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 16,
-                  ),
-                )
-              : const Text(
-                  'No data',
-                  style: TextStyle(color: Color(0xFFB0A898), fontSize: 12),
-                ),
-          onLongPress: () => _showRenameDialog(context, ref, patient),
         ),
       ),
     );
+  }
+}
+
+class _MoodSparkline extends StatelessWidget {
+  const _MoodSparkline({required this.points, required this.color});
+
+  final List<double> points;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final sanitizedPoints = points.isEmpty ? const <double>[0.5] : points;
+    return CustomPaint(
+      size: const Size(double.infinity, 30),
+      painter: _MoodSparklinePainter(
+        points: sanitizedPoints,
+        color: sanitizedPoints.length == 1 ? const Color(0xFFC9CEC6) : color,
+      ),
+    );
+  }
+}
+
+class _MoodSparklinePainter extends CustomPainter {
+  const _MoodSparklinePainter({required this.points, required this.color});
+
+  final List<double> points;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (points.isEmpty) return;
+
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+
+    final path = Path();
+    final stepX = points.length == 1 ? 0.0 : size.width / (points.length - 1);
+    const verticalPadding = 3.0;
+    final availableHeight = size.height - verticalPadding * 2;
+
+    for (var index = 0; index < points.length; index++) {
+      final x = stepX * index;
+      final y = verticalPadding + (1 - points[index].clamp(0.0, 1.0)) * availableHeight;
+      if (index == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _MoodSparklinePainter oldDelegate) {
+    return oldDelegate.points != points || oldDelegate.color != color;
   }
 }
 

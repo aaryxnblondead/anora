@@ -289,12 +289,14 @@ class LinkedPatientEntry {
     required this.patientDeviceId,
     required this.patientLabel,
     required this.linkedAt,
+    required this.moodHistory,
     this.latestMood,
   });
 
   final String patientDeviceId;
   final String patientLabel;
   final DateTime linkedAt;
+  final List<double> moodHistory;
   final LinkedPatientMoodSnapshot? latestMood;
 
   bool get hasMoodData => latestMood != null;
@@ -307,12 +309,14 @@ class LinkedPatientEntry {
 
   LinkedPatientEntry copyWith({
     String? patientLabel,
+    List<double>? moodHistory,
     LinkedPatientMoodSnapshot? latestMood,
   }) {
     return LinkedPatientEntry(
       patientDeviceId: patientDeviceId,
       patientLabel: patientLabel ?? this.patientLabel,
       linkedAt: linkedAt,
+      moodHistory: moodHistory ?? this.moodHistory,
       latestMood: latestMood ?? this.latestMood,
     );
   }
@@ -325,10 +329,20 @@ class LinkedPatientEntry {
       mood = LinkedPatientMoodSnapshot.fromJson(rawMood);
     }
     final deviceId = (json['patient_device_id'] as String?) ?? '';
+    final rawHistory = json['mood_history'];
+    final history = <double>[];
+    if (rawHistory is List) {
+      for (final value in rawHistory) {
+        if (value is num) {
+          history.add(value.toDouble());
+        }
+      }
+    }
     return LinkedPatientEntry(
       patientDeviceId: deviceId,
       patientLabel: LinkedPatientEntry.labelFromDeviceId(deviceId),
       linkedAt: DateTime.tryParse(rawLinkedAt) ?? DateTime.now(),
+      moodHistory: history,
       latestMood: mood,
     );
   }
