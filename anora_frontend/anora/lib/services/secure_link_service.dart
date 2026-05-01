@@ -15,6 +15,7 @@ class SecureLinkService {
   static const _linkedClinicianPublicKeyKey = 'linked_clinician_public_key_pem';
   static const _patientDeviceIdKey = 'patient_device_id';
   static const _clinicianJwtKey = 'clinician_jwt';
+  static const _clinicianOptInSettingKey = 'setting_clinician_opt_in';
 
   String? _lastLinkError;
 
@@ -191,6 +192,10 @@ class SecureLinkService {
   }
 
   Future<void> syncMoodTelemetry({required JournalEntry entry}) async {
+    if (!_isClinicianOptInEnabled()) {
+      return;
+    }
+
     final clinicianId = linkedClinicianId;
     final clinicianPublicKey = _linkedClinicianPublicKey();
     if (clinicianId == null || clinicianPublicKey == null) {
@@ -257,6 +262,10 @@ class SecureLinkService {
     required List<String> riskFlags,
     required String source,
   }) async {
+    if (!_isClinicianOptInEnabled()) {
+      return;
+    }
+
     final clinicianId = linkedClinicianId;
     final clinicianPublicKey = _linkedClinicianPublicKey();
     if (clinicianId == null || clinicianPublicKey == null) {
@@ -284,11 +293,45 @@ class SecureLinkService {
     );
   }
 
+  Future<bool> sendClinicianSignal({
+    required String signalType,
+    required Map<String, dynamic> payload,
+  }) async {
+    if (!_isClinicianOptInEnabled()) {
+      return false;
+    }
+
+    final clinicianId = linkedClinicianId;
+    final clinicianPublicKey = _linkedClinicianPublicKey();
+    if (clinicianId == null || clinicianPublicKey == null) {
+      return false;
+    }
+
+    final signalPayload = <String, dynamic>{
+      'signal_type': signalType,
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+      'payload': payload,
+    };
+
+    final lockedBox = ReportService.instance.buildLockedBox(
+      summary: signalPayload,
+      clinicianPublicKeyPem: clinicianPublicKey,
+    );
+
+    return _postSecurePayload(
+      path: '/clinician/signal',
+      clinicianId: clinicianId,
+      lockedBox: lockedBox,
+      signalType: signalType,
+    );
+  }
+
   Future<bool> _postSecurePayload({
     required String path,
     required String clinicianId,
     required Map<String, dynamic> lockedBox,
     Map<String, dynamic>? moodSummary,
+    String? signalType,
   }) async {
     final patientDeviceId = await _getOrCreatePatientDeviceId();
     final uri = ApiEndpointService.instance.buildUri(path);
@@ -301,6 +344,7 @@ class SecureLinkService {
           'clinician_id': clinicianId,
           'locked_box': lockedBox,
           ...?(moodSummary == null ? null : {'mood_summary': moodSummary}),
+          ...?(signalType == null ? null : {'signal_type': signalType}),
         },
       ),
     );
@@ -345,5 +389,12 @@ class SecureLinkService {
     final headerB64 = base64UrlEncode(utf8.encode('{"alg":"none","typ":"JWT"}')).replaceAll('=', '');
     final payloadB64 = base64UrlEncode(utf8.encode(payload)).replaceAll('=', '');
     return '$headerB64.$payloadB64.$signatureSeed';
+  }
+
+  bool _isClinicianOptInEnabled() {
+    return StorageService.instance.readBoolSetting(
+      _clinicianOptInSettingKey,
+      fallback: false,
+    );
   }
 }

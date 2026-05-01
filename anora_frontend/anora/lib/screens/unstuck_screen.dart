@@ -1,9 +1,8 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
-import '../services/api_endpoint_service.dart';
+import '../services/secure_link_service.dart';
 import '../services/storage_service.dart';
 
 class UnstuckScreen extends StatefulWidget {
@@ -148,11 +147,9 @@ class _UnstuckScreenState extends State<UnstuckScreen> {
     final optIn = StorageService.instance.readBoolSetting('setting_clinician_opt_in', fallback: false);
     if (optIn) {
       try {
-        final uri = ApiEndpointService.instance.buildUri('/clinician/signal');
-        await ApiEndpointService.instance.post(
-          uri,
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({'event': 'unstuck_session', 'session': session}),
+        await SecureLinkService.instance.sendClinicianSignal(
+          signalType: 'unstuck_session',
+          payload: session,
         );
       } catch (_) {
         // best-effort send; ignore failures

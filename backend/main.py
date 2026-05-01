@@ -335,6 +335,18 @@ def ensure_tables() -> None:
                 );
                 """
             )
+                        cursor.execute(
+                                """
+                                CREATE TABLE IF NOT EXISTS clinician_signals (
+                                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                                    patient_device_id TEXT NOT NULL,
+                                    clinician_id TEXT NOT NULL,
+                                    signal_type TEXT NOT NULL DEFAULT 'general',
+                                    locked_box JSONB NOT NULL,
+                                    created_at TIMESTAMPTZ DEFAULT NOW()
+                                );
+                                """
+                        )
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS clinician_invite_codes (
@@ -579,6 +591,18 @@ class SecurePayloadUpload(BaseModel):
                 )
 
         return value
+
+
+class ClinicianSignalUpload(SecurePayloadUpload):
+    signal_type: str = Field(default="general", min_length=1, max_length=64)
+
+    @field_validator("signal_type")
+    @classmethod
+    def validate_signal_type(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("signal_type must be a non-empty string")
+        return trimmed
 
 
 @app.post("/clinicians/register", status_code=201)
@@ -1095,6 +1119,36 @@ def get_clinician_feed(
 def share_entry_content(payload: SecurePayloadUpload) -> dict[str, str]:
     entry_id = _store_secure_event("shared_entries", payload)
     return {"entry_share_id": entry_id, "status": "stored"}
+
+
+@app.post("/clinician/signal", status_code=201)
+def upload_clinician_signal(payload: ClinicianSignalUpload) -> dict[str, str]:
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO clinician_signals (
+                  patient_device_id,
+                  clinician_id,
+                  signal_type,
+                  locked_box
+                )
+                VALUES (%s, %s, %s, %s)
+                RETURNING id;
+                """,
+                (
+                    payload.patient_device_id,
+                    payload.clinician_id,
+                    payload.signal_type,
+                    Json(payload.locked_box),
+                ),
+            )
+            row = cursor.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=500, detail="Failed to store clinician signal")
+
+    return {"signal_id": str(row["id"]), "status": "stored"}
 
 
 @app.post("/alerts/emergency", status_code=201)
