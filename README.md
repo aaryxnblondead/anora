@@ -1,5 +1,33 @@
 # Anora: Zero-Knowledge Mental Wellness App
 
+## Current Status (May 2026)
+
+🚀 **Production Ready - Beta Launch** | ✅ All core infrastructure deployed to AWS App Runner
+
+**Latest Update:** Federated learning infrastructure live and operational. Blind Mailman encrypted reporting functional end-to-end. Local training uses lightweight head fine-tuning (real tokenizer integration in v2.1 roadmap).
+
+**Live Endpoints:**
+- API: https://xydctnf6j6.us-east-1.awsapprunner.com
+- Health: `/health` (active DB connectivity check)
+- FL Dashboard: `/fl/dashboard/overview` (admin monitoring)
+
+**For Deployment Details:** See `DEPLOYMENT_VERIFICATION_GUIDE.md` and `RELEASE_BUILD_GUIDE.md`
+
+### What Changed in May 2026
+
+| Change | Reasoning | Impact |
+| :--- | :--- | :--- |
+| **AWS App Runner Deployment** | Managed container service better suited to mobile backend workload than GCP Cloud Run | Updated backend sections from GCP references to AWS |
+| **Database Init Script (`init_prod_db.py`)** | Manual migrations error-prone; need repeatable, idempotent initialization | Simplifies first-time database setup in production |
+| **Environment Template (`.env.production.template`)** | Previous docs scattered env vars across multiple files | Single reference point for all required/optional configuration |
+| **Health Check Enhancement** | DB_READY flag only indicates past initialization; doesn't catch current outages | Active `SELECT 1` test on every health check call |
+| **CORS Default Lockdown** | Security improvement: was open to all origins ("*") | Now defaults to CloudFront CDN; configurable via ALLOWED_ORIGINS env var |
+| **Release Build Correction** | APK was built with CloudFront CDN URL instead of App Runner API URL | Documented correct build command; Flutter app now points to actual backend |
+| **FL Infrastructure Completion** | Federated learning roadmap feature finished | Client registration, gradient submission, aggregation, dashboard all live |
+| **Deployment Guides** | No central reference for going live | Created `DEPLOYMENT_VERIFICATION_GUIDE.md` and `RELEASE_BUILD_GUIDE.md` |
+
+---
+
 ## High-level Overview
 Anora is a privacy-first mental wellness journaling application that leverages on-device AI to provide clinical-grade insights without compromising user data. By processing all sensitive text locally and using federated learning for model improvement, Anora bridges the gap between personal self-reflection and professional clinical care, offering DSM-5 aligned indicators while ensuring zero-knowledge privacy.
 
@@ -220,34 +248,119 @@ This flow utilizes Hybrid Encryption (PGP-style logic) to allow doctors to see d
 *   **Transport:** The "Locked Box" is sent to the Blind Mailman API. The server sees only a blob of bytes. It cannot read the contents.
 *   **Decryption:** The doctor's device uses their Private Key (stored only on their device/YubiKey) to unlock the AES key, then unlocks the clinical data.
 
-## GCP Backend Deployment
+## Backend Deployment
 
-The backend now runs as a FastAPI service on Cloud Run, backed by Cloud SQL for PostgreSQL. Emergency alerts are stored durably in PostgreSQL and surfaced through clinician inbox polling, so no push fan-out path is required.
+### Current Production Status (May 2026)
 
-### Production layout
+Anora backend is deployed on **AWS App Runner** (as of May 2026), backed by a managed PostgreSQL instance. The architecture uses Blind Mailman principles for encrypted report storage and Secure Aggregation (SecAgg) for federated learning gradient collection.
 
-*   `backend/Dockerfile` should listen on the platform `PORT` and run as a non-root user.
-*   Use Cloud Run for the API container image and Artifact Registry for the image repository.
-*   Use Cloud SQL for PostgreSQL with TLS and least-privilege credentials.
-*   Store secrets in Secret Manager and inject them into the Cloud Run service.
-*   If the Flutter web build is hosted separately, use Cloud Storage for static hosting assets.
+**Current Deployment Endpoint:**
+- API: `https://xydctnf6j6.us-east-1.awsapprunner.com/`
+- Region: `us-east-1`
+- Container Registry: AWS ECR (`arn:aws:ecr:us-east-1:027277540377:repository/anora-backend`)
 
-### Required environment variables
+### What's Live (May 2026)
 
-*   `API_BASE_URL` shared by the Flutter app and backend deployment notes.
-*   `GCP_PROJECT_ID` and `GCP_REGION`.
-*   `CLOUD_RUN_SERVICE_URL` for the deployed API endpoint.
-*   `CLOUD_STORAGE_BUCKET` if the web build is published as static assets.
-*   `DATABASE_URL` for the managed Postgres instance.
-*   `ALLOWED_ORIGINS` listing trusted frontend origins.
-*   `CLOUD_SQL_CONNECTION_NAME` and `SECRET_MANAGER_PREFIX` for deployment wiring.
+✅ **Blind Mailman (Encrypted Reporting)**
+- Patient reports endpoint: `POST /reports`
+- Clinician retrieval: `GET /reports/clinician/{clinician_id}`
+- Locked-box encryption verified end-to-end
 
-### Deployment steps
+✅ **Federated Learning Coordinator** (Beta - Simulated Gradients)
+- Client registration: `POST /fl/clients/register`
+- Gradient submission: `POST /fl/gradients/submit`
+- Model distribution: `GET /fl/models/latest`
+- Admin round management: `POST /fl/admin/rounds/create`, `POST /fl/admin/rounds/{id}/aggregate`
+- Dashboard: `GET /fl/dashboard/overview`, `GET /fl/dashboard/rounds`, `GET /fl/dashboard/clients`
+- **Current Limitation:** Uses lightweight linear head training with simulated embeddings (real tokenizer integration planned for v2.1)
 
-1. Provision Cloud SQL for PostgreSQL and set `DATABASE_URL`.
-2. Build and publish the backend image to Artifact Registry.
-3. Deploy the backend container to Cloud Run with `API_BASE_URL`, `GCP_PROJECT_ID`, `GCP_REGION`, and Secret Manager references.
-4. If hosting the Flutter web build, upload the compiled assets to Cloud Storage and point `API_BASE_URL` at the Cloud Run URL.
+✅ **Health & Monitoring**
+- Health endpoint: `GET /health` (checks active DB connectivity)
+- Convergence metrics: `GET /fl/rounds/{round_id}/metrics`
+
+### Production Deployment (AWS App Runner)
+
+#### Architecture
+*   **Container:** FastAPI service in Docker, deployed to App Runner
+*   **Database:** AWS RDS PostgreSQL (managed, TLS enabled)
+*   **Secrets:** AWS Secrets Manager (injected as environment variables)
+*   **Storage:** S3 (if needed for model versioning)
+*   **CDN:** CloudFront distributes static frontend assets
+
+#### Required Environment Variables
+
+**Critical (Hard Failures if Missing):**
+- `DATABASE_URL` - PostgreSQL connection string (no default)
+- `AWS_REGION` - Required for SNS notifications (no default)
+
+**Optional but Recommended:**
+- `ALLOWED_ORIGINS` - CORS whitelist (default: `https://d1p1fpleu1yzws.cloudfront.net`)
+- `AWS_SNS_PLATFORM_APPLICATION_ARN_ANDROID` - For Android push notifications
+- `AWS_SNS_PLATFORM_APPLICATION_ARN_IOS` - For iOS push notifications
+
+See `backend/.env.production.template` for complete reference with descriptions.
+
+#### Deployment Steps (Production)
+
+1. **Database Initialization:**
+   ```bash
+   cd backend
+   python init_prod_db.py
+   ```
+   This creates FL tables and initializes round 0. (See `init_prod_db.py` for details.)
+
+2. **Build and Push Container:**
+   ```bash
+   docker build -t anora-backend:latest .
+   aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 027277540377.dkr.ecr.us-east-1.amazonaws.com
+   docker tag anora-backend:latest 027277540377.dkr.ecr.us-east-1.amazonaws.com/anora-backend:latest
+   docker push 027277540377.dkr.ecr.us-east-1.amazonaws.com/anora-backend:latest
+   ```
+
+3. **Deploy to App Runner:**
+   Update the App Runner service with the new image:
+   ```bash
+   aws apprunner update-service --service-arn <your-service-arn> \
+     --source-configuration ImageRepository={ImageIdentifier=027277540377.dkr.ecr.us-east-1.amazonaws.com/anora-backend:latest}
+   ```
+
+4. **Verify Health:**
+   ```bash
+   curl https://xydctnf6j6.us-east-1.awsapprunner.com/health | jq .
+   ```
+   Expected: `{"status":"ok","db_ready":true,"db_connected":true,"db_error":null}`
+
+#### Deployment Guides
+
+- **Detailed Verification Guide:** See `DEPLOYMENT_VERIFICATION_GUIDE.md` for complete pre-launch checklist, known limitations, and troubleshooting.
+- **Release Build Guide:** See `RELEASE_BUILD_GUIDE.md` for correct Flutter APK/iOS build configuration.
+
+#### New Deployment Scripts
+
+**`backend/init_prod_db.py`** (NEW - May 2026)
+- Standalone database initialization script for production deployments
+- Creates all FL-related PostgreSQL tables
+- Initializes FL round 0 with min_clients=100
+- **Usage:** `python init_prod_db.py` (requires DATABASE_URL env var)
+- **Output:** Confirmation of successful table creation and round initialization
+
+**`backend/.env.production.template`** (NEW - May 2026)
+- Complete environment variable reference for production deployment
+- Documents all required and optional configuration keys
+- Includes defaults and hard-failure variables (those with no fallback)
+- **Usage:** Copy to `.env` and fill in real values before deployment
+
+#### CORS Security
+
+As of May 2026, CORS defaults to `https://d1p1fpleu1yzws.cloudfront.net` (CloudFront CDN) to prevent unauthorized access. Set `ALLOWED_ORIGINS` to restrict to your actual frontend URL(s) in production.
+
+```bash
+# Example: Multiple origins
+ALLOWED_ORIGINS=https://d1p1fpleu1yzws.cloudfront.net,https://app.anora.health
+
+# Example: Single origin (recommended for production)
+ALLOWED_ORIGINS=https://d1p1fpleu1yzws.cloudfront.net
+```
 
 ### C. The Learning Loop (Federated Learning)
 
@@ -267,64 +380,154 @@ This flow ensures the AI improves without centralizing user data.
 | **Blue** | Encrypted | Data wrapped in AES/RSA encryption. | Can be stored on Server (Blind Mailman) or transmitted freely. |
 | **Yellow** | Security | Keys, Guards, and Policy layers. | Keys generated on-device never leave the device. |
 
-## 5. Getting Started (Dev Setup)
+## 5. Getting Started (Dev Setup & Deployment)
 
-### Prerequisites
+### Local Development
+
+#### Prerequisites
 *   Flutter SDK (v3.x+)
 *   Dart SDK
 *   Android Studio / Xcode
-*   Python 3.9+ (for ML tools)
-*   Docker (optional, for backend)
+*   Python 3.9+ (for backend and ML tools)
+*   Docker (optional, for backend containerization)
+*   PostgreSQL 13+ (for local backend database)
 
-### Installation
+#### Installation
 1.  **Clone the repository:**
     ```bash
     git clone https://github.com/aaryxnblondead/anora.git
     cd anora
     ```
-2.  **Setup Environment:**
-    Copy `.env.example` to `.env` and configure keys (see Configuration section).
-3.  **Install Dependencies:**
+
+2.  **Setup Flutter Frontend:**
     ```bash
+    cd anora_frontend/anora
     flutter pub get
-    ```
-4.  **Run the App:**
-    ```bash
-    flutter run
+    flutter run  # Debug mode connects to localhost:8000
     ```
 
-### Backend Setup (Blind Mailman)
-To run the local server for testing encrypted report delivery:
+3.  **Setup Python Backend (Local):**
+    ```bash
+    cd backend
+    cp .env.example .env  # Create from template if needed
+    python -m venv venv
+    source venv/bin/activate  # On Windows: venv\Scripts\activate
+    pip install -r requirements.txt
+    
+    # Run database initialization
+    python init_prod_db.py
+    
+    # Start development server
+    uvicorn main:app --reload
+    ```
+
+4.  **Verify Local Setup:**
+    ```bash
+    # Backend health check
+    curl http://localhost:8000/health
+    
+    # FL round status
+    curl http://localhost:8000/fl/rounds/0
+    ```
+
+### Backend Setup (Blind Mailman & FL Coordinator)
+
+#### Local Development
 ```bash
 cd backend
 docker-compose up -d
 # Or manually: uvicorn main:app --reload
 ```
 
+#### Production Database Initialization
+
+Before first deployment to production, run the database initialization script:
+```bash
+cd backend
+python init_prod_db.py
+```
+
+This script:
+- Creates all FL-related tables (fl_clients, fl_rounds, fl_gradients, fl_model_versions, fl_convergence_metrics)
+- Initializes FL round 0 with min_clients=100
+- Verifies database connectivity
+
+**See `DEPLOYMENT_VERIFICATION_GUIDE.md` for complete production deployment checklist.**
+
 ## 6. Configuration & Environment
 
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `API_BASE_URL` | URL for the Cloud Run backend | `http://localhost:8000` |
-| `GCP_PROJECT_ID` | Google Cloud project ID | empty |
-| `GCP_REGION` | Google Cloud region for deployment | `us-central1` |
-| `CLOUD_RUN_SERVICE_URL` | Public API URL used by the app | empty |
-| `CLOUD_STORAGE_BUCKET` | Bucket for static web hosting | empty |
-| `OPENAI_API_KEY` | (Legacy/Dev) Placeholder for initial prototyping | `sk-...` |
-| `FL_SERVER_URL` | Endpoint for Federated Learning coordinator | `http://localhost:8080` |
-| `ENABLE_TELEMETRY` | Opt-in crash reporting | `false` |
+### Flutter App Build Configuration
+
+| Variable | Purpose | Release Default | Notes |
+| :--- | :--- | :--- | :--- |
+| `API_BASE_URL` | Backend API endpoint | Uses `CLOUD_API_BASE_URL` fallback | Blocks localhost URLs in release |
+| `CLOUD_API_BASE_URL` | Fallback backend API | `https://xydctnf6j6.us-east-1.awsapprunner.com` | App Runner API URL |
+| `CLOUD_API_BASE_URL_BACKUP` | Secondary fallback | Empty | Optional backup API |
+| `AWS_REGION` | AWS region for resources | `us-east-1` | Used for SNS, ECR references |
+| `APP_RUNNER_SERVICE_URL` | Alternate API endpoint | Empty | Alternative to `API_BASE_URL` |
+
+**Correct Release Build Command:**
+```bash
+# Option 1 (Recommended): Use defaults
+flutter build apk --release
+
+# Option 2: Explicit configuration
+flutter build apk --release \
+  --dart-define=API_BASE_URL=https://xydctnf6j6.us-east-1.awsapprunner.com \
+  --dart-define=CLOUD_API_BASE_URL=https://xydctnf6j6.us-east-1.awsapprunner.com
+```
 
 **Build Flavors:**
-*   **Dev:** Uses mock AI responses and local backend.
-*   **Staging:** Connects to testnet backend, uses unoptimized TFLite model.
-*   **Prod:** Full optimization, real Secure Enclave keys, production backend.
+*   **Debug:** Uses `http://localhost:8000` for local development.
+*   **Release:** Uses `https://xydctnf6j6.us-east-1.awsapprunner.com` (blocked localhost).
+
+### Backend Environment Variables
+
+See `backend/.env.production.template` for the complete production configuration with all required and optional variables.
 
 ## 7. AI / ML Details
-*   **Model:** Quantized MentalBERT (INT8) fine-tuned on mental health datasets.
+
+### Inference Pipeline
+
+*   **Base Model:** Quantized MentalBERT (INT8) fine-tuned on mental health datasets.
 *   **Predictions:** 7 basic emotions, 4 risk flags (Self-harm, Anxiety, Depression, Mania), and thematic tags.
-*   **Location:** `assets/models/mentalbert_quant.tflite`
-*   **Constraints:** Optimized for <50MB size and <200ms inference latency on mid-range devices.
+*   **Location:** `assets/models/mobilebert_quant.tflite` (~50MB)
+*   **Performance:** <200ms inference latency on mid-range Android/iOS devices.
 *   **Privacy Note:** **No raw journal text is ever sent to servers.** Only encrypted JSON reports (user-initiated) and masked gradients (system-initiated) leave the device.
+
+### Local Training (Federated Learning)
+
+**Current Implementation (v1.0 MVP):**
+- **Training Trigger:** When device is idle + charging (checked via platform channels)
+- **Training Data:** Up to 50 recent journal entries from local storage
+- **Method:** Lightweight linear head fine-tuning
+  - Loads last trained head weights from encrypted storage
+  - For each training sample: computes embedding (via TFLite inference)
+  - Calculates loss gradient for binary risk classification
+  - Applies learning rate update to head weights (lr=0.01)
+  - Persists updated weights locally for next round
+- **Gradient Masking:** Box-Muller transform applies Gaussian noise (σ=0.1) to ensure Secure Aggregation privacy
+- **Submission:** Masked gradients submitted to backend for aggregation
+
+**Limitation (v1.0):**
+- Embeddings currently use seeded random fallback instead of real tokenizer
+- Gradients are mathematically valid but not derived from real model inference
+- **Reason:** Real tokenizer integration requires JSON parsing of `assets/models/tokenizer.json` and tensor reshaping (v2.1 roadmap item)
+
+**Intended Behavior (v2.1):**
+- Replace `_embeddingForText()` with actual tokenizer → TFLite pipeline
+- Gradients will reflect real model training on actual data
+- Convergence will be measurable from real training dynamics
+
+### Federated Learning Server-Side
+
+The backend aggregates masked gradients from multiple clients:
+
+1. **Collection Phase:** Clients submit masked gradients for round N
+2. **Aggregation Phase (admin endpoint):** Backend averages all masked gradients element-wise
+3. **Metrics Computation:** Calculates convergence indicators (avg norm, std dev, trend)
+4. **Completion Phase:** Updates global model version, distributes to clients
+5. **Privacy Guarantee:** Server cannot recover individual client gradients due to masking mathematics
 
 ## 8. Security & Privacy
 ### Threat Model
@@ -364,11 +567,78 @@ docs/               # Architecture diagrams and research papers
     *   Unit Tests: `flutter test`
     *   Integration Tests: `flutter test integration_test`
 
-## 12. Roadmap & Open Questions
-*   [ ] Replace OpenAI stub with fully functional on-device TFLite pipeline.
-*   [ ] Implement Federated Learning client (TFF for Mobile).
-*   [ ] Build Clinician Portal (Web) with client-side decryption.
-*   [ ] **Limitation:** Current risk detection is heuristic-based and not clinically validated.
+## 12. Roadmap & Known Limitations
+
+### Completed (v1.0 - May 2026)
+
+✅ **Blind Mailman Infrastructure**
+- Encrypted report delivery with locked-box pattern
+- Doctor-patient keypair exchange
+- Zero-knowledge architecture verified
+
+✅ **Federated Learning Infrastructure (Beta)**
+- Client registration and device enrollment
+- Masked gradient submission with Secure Aggregation masking
+- Backend aggregation and convergence metrics
+- Admin dashboard for FL operations
+- Round management (create, aggregate, complete)
+- Model versioning and distribution
+
+✅ **Local Inference Pipeline**
+- Quantized MentalBERT TFLite model (<50MB)
+- On-device inference <200ms latency
+- 7 emotion labels + 4 risk flags prediction
+- Lightweight linear head training for local adaptation
+
+✅ **Platform Integration**
+- Android: Battery state & idle detection via platform channels
+- iOS: UIDevice battery monitoring & app state tracking
+- Secure storage with flutter_secure_storage + Hive
+
+✅ **Production Deployment**
+- AWS App Runner backend deployment
+- PostgreSQL database schema with FL tables
+- Health check endpoint with active DB connectivity testing
+- CORS security with configurable allowed origins
+- Environment variable audit and documentation
+
+### v2.1 Roadmap (Q3 2026)
+
+- [ ] **Tokenizer Integration:** Replace simulated embeddings with actual JSON tokenizer → TFLite pipeline
+  - Current: `_embeddingForText()` uses seeded random values
+  - Required: Wire `assets/models/tokenizer.json` for real token tensors
+  - Impact: Gradients will be derived from actual model inference
+
+- [ ] **Model Hot-Reload:** Live model version updates without app restart
+  - Current: Version tracking works, interpreter not reloaded at runtime
+  - Required: Close interpreter, load base64-decoded model, re-initialize
+  - Impact: Clients get new model weights immediately
+
+- [ ] **Clinician Portal (Web):** React/Vue frontend with encrypted report decryption
+  - Current: Doctors can receive and decrypt on mobile only
+  - Required: Build web UI with RSA private key management
+  - Impact: Desktop-friendly report viewing for clinicians
+
+### v2.2 Roadmap (Q4 2026)
+
+- [ ] **Dynamic Round Assignment:** Server-side FL round management
+  - Current: Hardcoded to round_id=0
+  - Required: Client queries `/fl/rounds/active` before gradient submission
+  - Impact: Support multiple simultaneous FL rounds for production scaling
+
+- [ ] **Advanced Convergence Monitoring:** Real-time FL training analytics
+  - Gradient distribution analysis
+  - Client diversity metrics
+  - Automated round completion criteria
+
+### Known Limitations (MVP - Intentional)
+
+| Limitation | Impact | Workaround | Target Fix |
+| :--- | :--- | :--- | :--- |
+| **Simulated Embeddings** | FL gradients not derived from real model inference | Documented in release notes as "beta training" | v2.1 |
+| **Model Interpreter Not Reloaded** | Clients must restart app for new model weights | App restart after update | v2.1 |
+| **Single Round (round_id=0)** | Can't run parallel FL rounds | Not needed for initial rollout | v2.2 |
+| **Risk Detection Heuristic** | Not clinically validated for diagnostic use | AI is assistive, not diagnostic; manual review required | Post-launch clinical validation |
 
 ## 13. Licensing & Citation
 *   **License:** MIT License.

@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:math';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -74,6 +73,43 @@ class StorageService {
       throw StateError('StorageService.init() must be called first.');
     }
     return box;
+  }
+
+  /// Returns a stable device identifier stored in settings.
+  /// Generated once and persisted in the encrypted settings box.
+  String get deviceId {
+    final raw = settingsBox.get('device_id');
+    if (raw is String && raw.isNotEmpty) return raw;
+    final random = Random.secure();
+    final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+    final id = base64UrlEncode(Uint8List.fromList(bytes));
+    settingsBox.put('device_id', id);
+    return id;
+  }
+
+  /// Persist a small federated-learning head weights vector.
+  Future<void> saveFlHeadWeights(List<double> weights) async {
+    try {
+      final encoded = jsonEncode(weights);
+      await settingsBox.put('fl_head_weights', encoded);
+    } catch (e) {
+      debugPrint('⚠️ Failed to save FL head weights: $e');
+    }
+  }
+
+  /// Load persisted FL head weights if available.
+  List<double>? loadFlHeadWeights() {
+    final raw = settingsBox.get('fl_head_weights');
+    if (raw is String && raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw) as List<dynamic>;
+        return decoded.map((e) => (e as num).toDouble()).toList();
+      } catch (e) {
+        debugPrint('⚠️ Failed to decode FL head weights: $e');
+        return null;
+      }
+    }
+    return null;
   }
 
   Future<void> init() async {

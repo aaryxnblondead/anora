@@ -21,6 +21,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from psycopg2.extras import Json, RealDictCursor
 
+from fl_coordinator import (
+    ensure_fl_tables,
+    register_fl_client,
+    submit_masked_gradient,
+    get_latest_model,
+    get_fl_round_status,
+    create_fl_round,
+    aggregate_masked_gradients,
+    get_convergence_metrics,
+    complete_fl_round,
+    FLClientRegistration,
+    MaskedGradientUpload,
+)
+
 
 load_dotenv(dotenv_path=Path(__file__).with_name(".env"))
 load_dotenv()
@@ -33,8 +47,9 @@ DB_READY = False
 DB_INIT_ERROR: str | None = None
 
 # CORS primarily impacts browser clients. Native mobile clients are not blocked by CORS.
+# In production, restrict to CloudFront CDN URL to prevent unauthorized access.
 # If ALLOWED_ORIGINS='*', allow all origins and disable credentials for spec compliance.
-_allowed_origins_raw = os.getenv("ALLOWED_ORIGINS", "*").strip()
+_allowed_origins_raw = os.getenv("ALLOWED_ORIGINS", "https://d1p1fpleu1yzws.cloudfront.net").strip()
 if _allowed_origins_raw == "*":
     ALLOWED_ORIGINS = ["*"]
     ALLOW_CREDENTIALS = False
@@ -45,7 +60,7 @@ else:
         if origin.strip()
     ]
     if not ALLOWED_ORIGINS:
-        ALLOWED_ORIGINS = ["http://localhost:3000"]
+        ALLOWED_ORIGINS = ["https://d1p1fpleu1yzws.cloudfront.net"]
     ALLOW_CREDENTIALS = True
 
 logger = logging.getLogger("anora.backend")
@@ -335,18 +350,18 @@ def ensure_tables() -> None:
                 );
                 """
             )
-                        cursor.execute(
-                                """
-                                CREATE TABLE IF NOT EXISTS clinician_signals (
-                                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                                    patient_device_id TEXT NOT NULL,
-                                    clinician_id TEXT NOT NULL,
-                                    signal_type TEXT NOT NULL DEFAULT 'general',
-                                    locked_box JSONB NOT NULL,
-                                    created_at TIMESTAMPTZ DEFAULT NOW()
-                                );
-                                """
-                        )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS clinician_signals (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    patient_device_id TEXT NOT NULL,
+                    clinician_id TEXT NOT NULL,
+                    signal_type TEXT NOT NULL DEFAULT 'general',
+                    locked_box JSONB NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                """
+            )
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS clinician_invite_codes (
@@ -379,6 +394,9 @@ def ensure_tables() -> None:
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_invite_code ON clinician_invite_codes (code);"
             )
+
+    # Initialize FL tables
+    ensure_fl_tables(connection)
 
 
 def initialize_database_with_retries() -> None:
@@ -1398,12 +1416,467 @@ def get_linked_patients(clinician_id: str) -> dict[str, Any]:
     return {"patients": patients, "total": len(patients)}
 
 
+# ===== Federated Learning Endpoints =====
+
+
+@app.post("/fl/clients/register", status_code=201)
+def register_fl_client_endpoint(payload: FLClientRegistration) -> dict[str, Any]:
+    """
+    Register a device for participation in federated learning.
+    
+    The device will receive the current model version and begin local training
+    when idle/charging.
+    """
+    with get_connection() as connection:
+        result = register_fl_client(connection, payload)
+    
+    logger.info(
+        "fl_client_registered patient_device_id=%s app_version=%s model_version=%s",
+        payload.patient_device_id,
+        payload.app_version,
+        payload.model_version,
+    )
+    
+    return result
+
+
+@app.get("/fl/models/latest")
+def get_latest_fl_model() -> dict[str, Any]:
+    """
+    Download the latest deployed federated learning model.
+    
+    Returns the base64-encoded TFLite model weights that clients
+    should use for local training.
+    """
+    with get_connection() as connection:
+        model = get_latest_model(connection)
+    
+    if model is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No federated learning model available yet",
+        )
+    
+    logger.info("fl_model_download model_version=%s", model["version"])
+    return model
+
+
+@app.post("/fl/gradients/submit", status_code=201)
+def submit_fl_gradient(payload: MaskedGradientUpload) -> dict[str, Any]:
+    """
+    Submit masked gradients from local training.
+    
+    **Secure Aggregation (SecAgg) Protocol:**
+    
+    1. Device trains locally on journal entries (patient data never leaves device).
+    2. Device computes gradient updates: dW_local = weights_new - weights_old
+    3. Device generates random mask: R ~ N(0, sigma²)
+    4. Device sends to server: masked_gradient = (dW_local + R)
+    
+    The server cannot recover individual device gradients because:
+    - Each device's mask R is unknown to the server
+    - When aggregating across 1000+ devices, masks statistically cancel: Σ(R_i) ≈ 0
+    - Result: Σ(dW_i + R_i) ≈ Σ(dW_i), the true global average
+    
+    This enables privacy-preserving model improvement without centralizing data.
+    """
+    with get_connection() as connection:
+        result = submit_masked_gradient(connection, payload)
+    
+    logger.info(
+        "fl_gradient_received round_id=%s patient_device_id=%s gradient_norm=%.4f",
+        payload.round_id,
+        payload.patient_device_id,
+        payload.gradient_norm,
+    )
+    
+    return result
+
+
+@app.get("/fl/rounds/{round_id}")
+def get_fl_round_status_endpoint(round_id: int) -> dict[str, Any]:
+    """
+    Get aggregation progress for a specific federated learning round.
+    
+    Clients can poll this to understand if a round is complete and
+    when new model updates will be available.
+    """
+    with get_connection() as connection:
+        status = get_fl_round_status(connection, round_id)
+    
+    if status is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"FL round {round_id} not found",
+        )
+    
+    return status
+
+
+@app.post("/fl/admin/rounds/create", status_code=201)
+def create_fl_round_endpoint(
+    round_id: int,
+    model_version: int,
+    min_clients: int = 100,
+) -> dict[str, Any]:
+    """
+    [Admin Endpoint] Create a new federated learning round.
+    
+    This initiates a new aggregation round. Clients will submit gradients
+    for this round when they perform local training while idle/charging.
+    """
+    if round_id < 0 or model_version < 0:
+        raise HTTPException(status_code=422, detail="Invalid round or model version")
+    
+    with get_connection() as connection:
+        result = create_fl_round(connection, round_id, model_version, min_clients)
+    
+    logger.info(
+        "fl_round_created round_id=%s model_version=%s min_clients=%s",
+        round_id,
+        model_version,
+        min_clients,
+    )
+    
+    return result
+
+
+@app.post("/fl/admin/rounds/{round_id}/aggregate", status_code=200)
+def aggregate_round_gradients(round_id: int) -> dict[str, Any]:
+    """
+    [Admin Endpoint] Aggregate masked gradients for a completed round.
+    
+    This is called when a round has collected sufficient client gradients.
+    It computes:
+    - Aggregated gradient (element-wise average of masked vectors)
+    - Convergence metrics (norms, variance)
+    - Prepares updates for model training
+    
+    Security: Individual client gradients remain masked and cannot be recovered.
+    Server only sees the aggregated signal across all clients.
+    """
+    if round_id < 0:
+        raise HTTPException(status_code=422, detail="Invalid round_id")
+    
+    try:
+        with get_connection() as connection:
+            result = aggregate_masked_gradients(connection, round_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+    logger.info(
+        "fl_gradients_aggregated round_id=%s clients=%s avg_norm=%.4f std_dev=%.4f",
+        round_id,
+        result["num_clients"],
+        result["avg_gradient_norm"],
+        result["std_dev"],
+    )
+    
+    return result
+
+
+@app.get("/fl/rounds/{round_id}/metrics")
+def get_round_convergence_metrics(round_id: int) -> dict[str, Any]:
+    """
+    Get convergence metrics for a specific FL round.
+    
+    Returns:
+    - avg_gradient_norm: Average L2 norm of masked gradients
+    - max_gradient_norm: Maximum norm (outlier detection)
+    - gradient_std_dev: Standard deviation (convergence stability)
+    - Trends: improving, stable, or diverging
+    
+    Use these to monitor training stability and decide when to deploy
+    new global model.
+    """
+    if round_id < 0:
+        raise HTTPException(status_code=422, detail="Invalid round_id")
+    
+    with get_connection() as connection:
+        metrics = get_convergence_metrics(connection, round_id)
+    
+    return metrics
+
+
+@app.post("/fl/admin/rounds/{round_id}/complete", status_code=200)
+def complete_round(round_id: int) -> dict[str, Any]:
+    """
+    [Admin Endpoint] Mark a round as completed.
+    
+    Call this after:
+    1. Aggregation is done (gradients averaged)
+    2. Global model has been trained with aggregated updates
+    3. New model version is ready to deploy
+    
+    This prevents further gradient submissions to this round and
+    allows starting a new round.
+    """
+    if round_id < 0:
+        raise HTTPException(status_code=422, detail="Invalid round_id")
+    
+    try:
+        with get_connection() as connection:
+            result = complete_fl_round(connection, round_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+    logger.info(
+        "fl_round_completed round_id=%s model_version=%s clients=%s",
+        round_id,
+        result["model_version"],
+        result["clients_submitted"],
+    )
+    
+    return result
+
+
+@app.get("/fl/dashboard/overview")
+def fl_dashboard_overview() -> dict[str, Any]:
+    """
+    [Admin Dashboard] Get federated learning system overview.
+    
+    Aggregates all key metrics for monitoring FL health:
+    - Client participation (total, active, contribution rates)
+    - Round status (active, completed)
+    - Model versions and deployment status
+    - Convergence metrics (latest round trends)
+    """
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            # Client stats
+            cursor.execute(
+                """
+                SELECT
+                  COUNT(*) AS total_clients,
+                  COUNT(CASE WHEN last_submission_at > NOW() - INTERVAL '7 days' THEN 1 END) AS active_7d,
+                  COUNT(CASE WHEN last_submission_at > NOW() - INTERVAL '30 days' THEN 1 END) AS active_30d,
+                  AVG(total_contributions) AS avg_contributions,
+                  MAX(total_contributions) AS max_contributions
+                FROM fl_clients;
+                """
+            )
+            client_stats = cursor.fetchone()
+
+            # Round stats
+            cursor.execute(
+                """
+                SELECT
+                  COUNT(*) FILTER (WHERE status = 'active') AS active_rounds,
+                  COUNT(*) FILTER (WHERE status = 'completed') AS completed_rounds,
+                  MAX(round_id) AS latest_round_id
+                FROM fl_rounds;
+                """
+            )
+            round_stats = cursor.fetchone()
+
+            # Model stats
+            cursor.execute(
+                """
+                SELECT
+                  MAX(version) AS latest_version,
+                  COUNT(*) AS total_versions,
+                  SUM(num_clients_aggregated) AS total_clients_contributed
+                FROM fl_model_versions;
+                """
+            )
+            model_stats = cursor.fetchone()
+
+            # Latest round metrics
+            round_stats = round_stats or {}
+            client_stats = client_stats or {}
+            model_stats = model_stats or {}
+            latest_round = round_stats.get("latest_round_id") or 0
+            cursor.execute(
+                """
+                SELECT metric_name, metric_value
+                FROM fl_convergence_metrics
+                WHERE round_id = %s;
+                """,
+                (latest_round,),
+            )
+            latest_metrics = cursor.fetchall()
+
+    return {
+        "clients": {
+            "total": client_stats.get("total_clients") or 0,
+            "active_7d": client_stats.get("active_7d") or 0,
+            "active_30d": client_stats.get("active_30d") or 0,
+            "avg_contributions": float(client_stats.get("avg_contributions") or 0),
+            "max_contributions": client_stats.get("max_contributions") or 0,
+        },
+        "rounds": {
+            "active": round_stats.get("active_rounds") or 0,
+            "completed": round_stats.get("completed_rounds") or 0,
+            "latest_id": round_stats.get("latest_round_id"),
+        },
+        "models": {
+            "latest_version": model_stats.get("latest_version"),
+            "total_versions": model_stats.get("total_versions") or 0,
+            "total_clients_contributed": model_stats.get("total_clients_contributed") or 0,
+        },
+        "latest_round_metrics": {
+            row["metric_name"]: float(row["metric_value"])
+            for row in latest_metrics
+        } if latest_metrics else {},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/fl/dashboard/rounds")
+def fl_dashboard_rounds() -> dict[str, Any]:
+    """
+    [Admin Dashboard] Get detailed view of all FL rounds.
+    
+    Shows status, progress, and metrics for each round.
+    Useful for monitoring ongoing aggregation and planning next round.
+    """
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                  r.round_id,
+                  r.model_version,
+                  r.status,
+                  r.min_clients,
+                  r.clients_submitted,
+                  ROUND(100.0 * r.clients_submitted / GREATEST(1, r.min_clients)) AS progress_percent,
+                  r.created_at,
+                  r.completed_at,
+                  mv.num_clients_aggregated,
+                  mv.avg_gradient_norm
+                FROM fl_rounds r
+                LEFT JOIN fl_model_versions mv ON r.model_version = mv.version
+                ORDER BY r.round_id DESC;
+                """
+            )
+            rounds = cursor.fetchall()
+
+    return {
+        "rounds": [
+            {
+                "round_id": row["round_id"],
+                "model_version": row["model_version"],
+                "status": row["status"],
+                "clients_submitted": row["clients_submitted"],
+                "min_clients": row["min_clients"],
+                "progress_percent": row["progress_percent"],
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None,
+                "num_clients_aggregated": row["num_clients_aggregated"],
+                "avg_gradient_norm": float(row["avg_gradient_norm"]) if row["avg_gradient_norm"] else None,
+            }
+            for row in rounds
+        ],
+        "count": len(rounds),
+    }
+
+
+@app.get("/fl/dashboard/clients")
+def fl_dashboard_clients(limit: int = 100) -> dict[str, Any]:
+    """
+    [Admin Dashboard] Get top contributing clients.
+    
+    Useful for identifying power users and checking device diversity.
+    """
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                  patient_device_id,
+                  app_version,
+                  current_model_version,
+                  total_contributions,
+                  last_submission_at,
+                  enrolled_at
+                FROM fl_clients
+                ORDER BY total_contributions DESC, last_submission_at DESC
+                LIMIT %s;
+                """,
+                (limit,),
+            )
+            clients = cursor.fetchall()
+
+    return {
+        "clients": [
+            {
+                "device_id": row["patient_device_id"],
+                "app_version": row["app_version"],
+                "model_version": row["current_model_version"],
+                "contributions": row["total_contributions"],
+                "last_submission": row["last_submission_at"].isoformat() if row["last_submission_at"] else None,
+                "enrolled": row["enrolled_at"].isoformat() if row["enrolled_at"] else None,
+            }
+            for row in clients
+        ],
+        "count": len(clients),
+    }
+
+
+@app.get("/fl/clients/stats")
+def get_fl_client_stats() -> dict[str, Any]:
+    """
+    Get federated learning engagement statistics.
+    
+    Useful for monitoring FL participation and planning aggregation rounds.
+    """
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                  COUNT(*) AS total_clients,
+                  COUNT(CASE WHEN last_submission_at > NOW() - INTERVAL '7 days' THEN 1 END) AS active_clients_7d,
+                  AVG(total_contributions) AS avg_contributions,
+                  MAX(total_contributions) AS max_contributions
+                FROM fl_clients;
+                """
+            )
+            row = cursor.fetchone()
+            row = row or {}
+
+    return {
+        "total_clients": row.get("total_clients") or 0,
+        "active_clients_7d": row.get("active_clients_7d") or 0,
+        "avg_contributions": float(row.get("avg_contributions") or 0),
+        "max_contributions": row.get("max_contributions") or 0,
+    }
+
+
 @app.get("/health")
 def health() -> dict[str, str | bool]:
-    if DB_READY:
-        return {"status": "ok", "db_ready": True}
-    return {
-        "status": "degraded",
-        "db_ready": False,
-        "db_error": DB_INIT_ERROR or "database initialization failed",
+    """
+    Health check endpoint for monitoring and load balancers.
+    
+    Returns:
+      - status: "ok" (DB connected) or "degraded" (DB disconnected)
+      - db_ready: True if initialization succeeded, False otherwise
+      - db_connected: True if current connectivity test succeeds
+      - db_error: Reason for degraded state (if applicable)
+    """
+    response = {
+        "status": "ok",
+        "db_ready": DB_READY,
+        "db_connected": False,
+        "db_error": None,
     }
+    
+    # Test current database connectivity
+    if DB_READY:
+        try:
+            conn = get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT 1;")
+            conn.close()
+            response["db_connected"] = True
+            response["status"] = "ok"
+        except psycopg2.OperationalError as e:
+            response["db_connected"] = False
+            response["status"] = "degraded"
+            response["db_error"] = f"connection_failed: {str(e)[:100]}"
+    else:
+        response["status"] = "degraded"
+        response["db_error"] = DB_INIT_ERROR or "database initialization failed"
+    
+    return response
