@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/user_role.dart';
 import '../state/role_controller.dart';
+import '../theme/anora_theme.dart';
 
 class RoleSelectionScreen extends ConsumerStatefulWidget {
   const RoleSelectionScreen({super.key});
@@ -67,89 +68,82 @@ class _RoleSelectionScreenState extends ConsumerState<RoleSelectionScreen>
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
+    final layout = AnoraLayoutSpec.of(context);
 
-    return Scaffold(
-      backgroundColor: colors.surface,
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Expanded(
-                flex: 4,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      'Welcome to Anora',
-                      style: theme.textTheme.headlineMedium,
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      'Who are you joining as?',
-                      style: theme.textTheme.bodyLarge,
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
+    return AnoraBackdrop(
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: SafeArea(
+          child: Padding(
+            padding: layout.screenPadding(bottom: layout.bottomPadding + 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                AnoraStaggeredReveal(
+                  order: 0,
+                  child: AnoraScreenHeader(
+                    title: 'Welcome to Anora',
+                    subtitle: layout.isCompact
+                        ? 'Choose a role to tailor your experience.'
+                        : 'Choose how you want to start so we can tailor your experience.',
+                  ),
                 ),
-              ),
-              Expanded(
-                flex: 6,
-                child: Column(
-                  children: [
-                    AnimatedBuilder(
-                      animation: _controller,
-                      builder: (context, child) {
-                        return Opacity(
-                          opacity: _firstOpacity.value,
-                          child: Transform.translate(
-                            offset: Offset(0, _firstOffset.value.dy * 40),
-                            child: child,
-                          ),
-                        );
-                      },
-                      child: _RoleCard(
-                        icon: Icons.edit_note_rounded,
-                        iconColor: colors.primary,
-                        title: 'I\'m here to journal',
-                        subtitle:
-                            'Track your mood, write privately, share with your care team.',
-                        onTap: () => _selectRole(UserRole.patient),
+                SizedBox(height: layout.sectionGap),
+                Expanded(
+                  child: Column(
+                    children: [
+                      AnimatedBuilder(
+                        animation: _controller,
+                        builder: (context, child) {
+                          return Opacity(
+                            opacity: _firstOpacity.value,
+                            child: Transform.translate(
+                              offset: Offset(0, _firstOffset.value.dy * 40),
+                              child: child,
+                            ),
+                          );
+                        },
+                        child: _RoleCard(
+                          icon: Icons.edit_note_rounded,
+                          iconColor: colors.primary,
+                          title: 'I\'m here to journal',
+                          subtitle:
+                              'Track your mood, write privately, and share safe summaries with care teams.',
+                          onTap: () => _selectRole(UserRole.patient),
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 14),
-                    AnimatedBuilder(
-                      animation: _controller,
-                      builder: (context, child) {
-                        return Opacity(
-                          opacity: _secondOpacity.value,
-                          child: Transform.translate(
-                            offset: Offset(0, _secondOffset.value.dy * 40),
-                            child: child,
-                          ),
-                        );
-                      },
-                      child: _RoleCard(
-                        icon: Icons.medical_services_rounded,
-                        iconColor: colors.secondary,
-                        title: 'I\'m a Clinician',
-                        subtitle:
-                            'Review encrypted patient summaries securely.',
-                        onTap: () => _selectRole(UserRole.clinician),
+                      SizedBox(height: layout.sectionGap),
+                      AnimatedBuilder(
+                        animation: _controller,
+                        builder: (context, child) {
+                          return Opacity(
+                            opacity: _secondOpacity.value,
+                            child: Transform.translate(
+                              offset: Offset(0, _secondOffset.value.dy * 40),
+                              child: child,
+                            ),
+                          );
+                        },
+                        child: _RoleCard(
+                          icon: Icons.medical_services_rounded,
+                          iconColor: colors.secondary,
+                          title: 'I\'m a Clinician',
+                          subtitle:
+                              'Review encrypted patient trends and respond quickly to risk alerts.',
+                          onTap: () => _selectRole(UserRole.clinician),
+                        ),
                       ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      'Your choice is stored only on this device.',
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.bodySmall,
-                    ),
-                  ],
+                      const Spacer(),
+                      Text(
+                        'Your choice is stored only on this device.',
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -175,35 +169,42 @@ class _RoleCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Material(
-      color: const Color(0xFFF1F0EB),
-      borderRadius: BorderRadius.circular(20),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(20),
-        onTap: onTap,
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(18),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: const Color(0xFFE0DED7)),
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(icon, size: 36, color: iconColor),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title, style: theme.textTheme.titleLarge),
-                    const SizedBox(height: 6),
-                    Text(subtitle, style: theme.textTheme.bodyMedium),
-                  ],
+    final layout = AnoraLayoutSpec.of(context);
+    return AnoraSectionCard(
+      emphasis: true,
+      padding: EdgeInsets.zero,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(20),
+          onTap: onTap,
+          child: Padding(
+            padding: EdgeInsets.all(layout.isCompact ? 14 : 18),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: layout.isCompact ? 42 : 46,
+                  height: layout.isCompact ? 42 : 46,
+                  decoration: BoxDecoration(
+                    color: iconColor.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Icon(icon, size: layout.isCompact ? 22 : 24, color: iconColor),
                 ),
-              ),
-            ],
+                SizedBox(width: layout.isCompact ? 10 : 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, style: theme.textTheme.titleLarge),
+                      const SizedBox(height: 6),
+                      Text(subtitle, style: theme.textTheme.bodyMedium),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

@@ -18,6 +18,8 @@ class StorageService {
   static const String _quotesKey = 'home_quotes';
   static const String _quoteIndexKey = 'home_quote_index';
   static const String _unstuckSessionsKey = 'unstuck_sessions';
+  static const String _flModelVersionKey = 'fl_downloaded_model_version';
+  static const String _flModelB64Key = 'fl_downloaded_model_b64';
 
   static const List<Map<String, dynamic>> _defaultQuotes = [
     {
@@ -110,6 +112,46 @@ class StorageService {
       }
     }
     return null;
+  }
+
+  /// Persist downloaded FL model bytes as base64 with version metadata.
+  Future<void> saveDownloadedFlModel({
+    required int version,
+    required String base64Model,
+  }) async {
+    try {
+      await settingsBox.put(_flModelVersionKey, version);
+      await settingsBox.put(_flModelB64Key, base64Model);
+    } catch (e) {
+      debugPrint('⚠️ Failed to persist downloaded FL model: $e');
+    }
+  }
+
+  /// Load persisted downloaded FL model base64 blob, if present.
+  String? loadDownloadedFlModelBase64() {
+    final raw = settingsBox.get(_flModelB64Key);
+    if (raw is String && raw.trim().isNotEmpty) {
+      return raw.trim();
+    }
+    return null;
+  }
+
+  /// Load persisted downloaded FL model version, if present.
+  int? loadDownloadedFlModelVersion() {
+    final raw = settingsBox.get(_flModelVersionKey);
+    if (raw is int && raw >= 0) {
+      return raw;
+    }
+    if (raw is num && raw >= 0) {
+      return raw.toInt();
+    }
+    return null;
+  }
+
+  /// Remove persisted downloaded FL model blob and version metadata.
+  Future<void> clearDownloadedFlModel() async {
+    await settingsBox.delete(_flModelVersionKey);
+    await settingsBox.delete(_flModelB64Key);
   }
 
   Future<void> init() async {

@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from datetime import datetime, timezone, timedelta
@@ -97,12 +98,22 @@ def ensure_fl_tables(connection: psycopg2.extensions.connection) -> None:
               patient_device_id TEXT PRIMARY KEY,
               app_version TEXT NOT NULL,
               current_model_version INT NOT NULL DEFAULT 0,
+              assigned_round_id INT,
+              assignment_expires_at TIMESTAMPTZ,
               last_submission_at TIMESTAMPTZ,
               total_contributions INT NOT NULL DEFAULT 0,
               enrolled_at TIMESTAMPTZ DEFAULT NOW(),
               updated_at TIMESTAMPTZ DEFAULT NOW()
             );
             """
+        )
+
+        # Backward-compatible schema evolution for existing deployments.
+        cursor.execute(
+            "ALTER TABLE fl_clients ADD COLUMN IF NOT EXISTS assigned_round_id INT;"
+        )
+        cursor.execute(
+            "ALTER TABLE fl_clients ADD COLUMN IF NOT EXISTS assignment_expires_at TIMESTAMPTZ;"
         )
 
         # Track FL training rounds
@@ -176,6 +187,9 @@ def ensure_fl_tables(connection: psycopg2.extensions.connection) -> None:
         )
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_fl_clients_updated ON fl_clients(updated_at DESC);"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fl_clients_assigned_round ON fl_clients(assigned_round_id);"
         )
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_fl_convergence_round ON fl_convergence_metrics(round_id);"
@@ -359,6 +373,214 @@ def get_fl_round_status(
         "progress_percent": min(100, int(100 * row["clients_submitted"] / max(1, row["min_clients"]))),
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None,
+    }
+
+
+def get_active_fl_round(
+    connection: psycopg2.extensions.connection,
+) -> dict[str, Any] | None:
+    """Get the currently active federated learning round."""
+    with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+        cursor.execute(
+            """
+            SELECT round_id, model_version, status, min_clients, clients_submitted,
+                   created_at, completed_at
+            FROM fl_rounds
+            WHERE status = 'active'
+            ORDER BY round_id DESC
+            LIMIT 1;
+            """
+        )
+        row = cursor.fetchone()
+
+    if row is None:
+        return None
+
+    return {
+        "round_id": row["round_id"],
+        "model_version": row["model_version"],
+        "status": row["status"],
+        "min_clients": row["min_clients"],
+        "clients_submitted": row["clients_submitted"],
+        "progress_percent": min(100, int(100 * row["clients_submitted"] / max(1, row["min_clients"]))),
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None,
+    }
+
+
+def list_active_fl_rounds(
+    connection: psycopg2.extensions.connection,
+) -> list[dict[str, Any]]:
+    """List all currently active federated learning rounds."""
+    with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+        cursor.execute(
+            """
+            SELECT round_id, model_version, status, min_clients, clients_submitted,
+                   created_at, completed_at
+            FROM fl_rounds
+            WHERE status = 'active'
+            ORDER BY round_id DESC;
+            """
+        )
+        rows = cursor.fetchall()
+
+    return [
+        {
+            "round_id": row["round_id"],
+            "model_version": row["model_version"],
+            "status": row["status"],
+            "min_clients": row["min_clients"],
+            "clients_submitted": row["clients_submitted"],
+            "progress_percent": min(100, int(100 * row["clients_submitted"] / max(1, row["min_clients"]))),
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None,
+        }
+        for row in rows
+    ]
+
+
+def assign_client_to_fl_round(
+    connection: psycopg2.extensions.connection,
+    patient_device_id: str,
+    app_version: str | None = None,
+    assignment_ttl_hours: int = 24,
+) -> dict[str, Any] | None:
+    """
+    Assign a client to an active round using weighted rendezvous hashing.
+
+    Strategy:
+    1. Reuse a non-expired cached assignment when possible.
+    2. Otherwise score each active round deterministically for this client.
+    3. Apply a light load penalty to reduce hot-spotting.
+    4. Persist the selected assignment for a TTL window.
+    """
+    normalized_device_id = patient_device_id.strip()
+    if not normalized_device_id:
+        raise ValueError("patient_device_id must be non-empty")
+
+    with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+        cursor.execute(
+            """
+            SELECT
+              c.assigned_round_id,
+              c.assignment_expires_at,
+              r.round_id,
+              r.model_version,
+              r.status,
+              r.min_clients,
+              r.clients_submitted,
+              r.created_at,
+              r.completed_at
+            FROM fl_clients c
+            LEFT JOIN fl_rounds r ON r.round_id = c.assigned_round_id
+            WHERE c.patient_device_id = %s;
+            """,
+            (normalized_device_id,),
+        )
+        cached = cursor.fetchone()
+
+    now = datetime.now(timezone.utc)
+    if (
+        cached
+        and cached.get("round_id") is not None
+        and cached.get("status") == "active"
+        and cached.get("assignment_expires_at")
+        and cached["assignment_expires_at"] > now
+    ):
+        return {
+            "round_id": cached["round_id"],
+            "model_version": cached["model_version"],
+            "status": cached["status"],
+            "min_clients": cached["min_clients"],
+            "clients_submitted": cached["clients_submitted"],
+            "progress_percent": min(
+                100,
+                int(100 * cached["clients_submitted"] / max(1, cached["min_clients"])),
+            ),
+            "created_at": cached["created_at"].isoformat() if cached["created_at"] else None,
+            "completed_at": cached["completed_at"].isoformat() if cached["completed_at"] else None,
+            "assignment_source": "cached",
+            "assignment_expires_at": cached["assignment_expires_at"].isoformat(),
+            "assignment_policy": {
+                "strategy": "weighted_rendezvous_hashing",
+                "active_round_count": 1,
+                "load_penalty": 0.0,
+            },
+        }
+
+    rounds = list_active_fl_rounds(connection)
+    if not rounds:
+        return None
+
+    def _score_round(round_status: dict[str, Any]) -> tuple[float, float]:
+        round_id = int(round_status["round_id"])
+        model_version = int(round_status["model_version"])
+        min_clients = max(1, int(round_status["min_clients"]))
+        clients_submitted = int(round_status["clients_submitted"])
+
+        digest = hashlib.sha256(
+            f"{normalized_device_id}:{round_id}:{model_version}".encode("utf-8")
+        ).digest()
+        base = int.from_bytes(digest[:8], byteorder="big", signed=False) / float(2**64 - 1)
+
+        load_ratio = clients_submitted / float(min_clients)
+        load_penalty = min(0.45, load_ratio * 0.20)
+        return (base - load_penalty, load_penalty)
+
+    scored = [
+        (round_status, *_score_round(round_status))
+        for round_status in rounds
+    ]
+    scored.sort(key=lambda item: item[1], reverse=True)
+    selected_round = scored[0][0]
+    selected_penalty = scored[0][2]
+
+    assignment_expires_at = now + timedelta(hours=max(1, assignment_ttl_hours))
+    resolved_app_version = (app_version or "").strip() or "unknown"
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO fl_clients (
+              patient_device_id,
+              app_version,
+              current_model_version,
+              assigned_round_id,
+              assignment_expires_at,
+              updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (patient_device_id)
+            DO UPDATE SET
+              app_version = CASE
+                WHEN EXCLUDED.app_version <> '' THEN EXCLUDED.app_version
+                ELSE fl_clients.app_version
+              END,
+              current_model_version = GREATEST(fl_clients.current_model_version, EXCLUDED.current_model_version),
+              assigned_round_id = EXCLUDED.assigned_round_id,
+              assignment_expires_at = EXCLUDED.assignment_expires_at,
+              updated_at = NOW();
+            """,
+            (
+                normalized_device_id,
+                resolved_app_version,
+                int(selected_round["model_version"]),
+                int(selected_round["round_id"]),
+                assignment_expires_at,
+            ),
+        )
+
+    connection.commit()
+
+    return {
+        **selected_round,
+        "assignment_source": "rendezvous",
+        "assignment_expires_at": assignment_expires_at.isoformat(),
+        "assignment_policy": {
+            "strategy": "weighted_rendezvous_hashing",
+            "active_round_count": len(rounds),
+            "load_penalty": round(selected_penalty, 6),
+        },
     }
 
 

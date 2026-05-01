@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../services/clinician_push_service.dart';
+import '../theme/anora_theme.dart';
 import 'providers/linked_patients_provider.dart';
 
 class PatientFeedTab extends ConsumerStatefulWidget {
@@ -25,115 +26,137 @@ class _PatientFeedTabState extends ConsumerState<PatientFeedTab> {
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(linkedPatientsProvider);
+    final layout = AnoraLayoutSpec.of(context);
 
     if (state.isLoading && state.patients.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
+      return Padding(
+        padding: layout.screenPadding(top: layout.topPadding, bottom: layout.bottomPadding),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: const [
+            AnoraScreenHeader(
+              title: 'Live Feed',
+              subtitle: 'Pulling encrypted patient updates...',
+            ),
+            SizedBox(height: 16),
+            LinearProgressIndicator(minHeight: 3),
+          ],
+        ),
+      );
     }
 
     return RefreshIndicator(
       onRefresh: () => ref.read(linkedPatientsProvider.notifier).sync(),
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
-        children: [
-          Row(
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: layout.maxReadableWidth),
+          child: ListView(
+            padding: layout.screenPadding(top: layout.topPadding, bottom: layout.bottomPadding),
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Live Feed',
-                      style: Theme.of(context).textTheme.headlineMedium,
+              Row(
+                children: [
+                  const Expanded(
+                    child: AnoraScreenHeader(
+                      title: 'Live Feed',
+                      subtitle: 'Linked patients and mood activity in real time.',
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Linked patients',
-                      style: Theme.of(context).textTheme.bodyMedium,
-                    ),
-                  ],
-                ),
-              ),
-              IconButton(
-                onPressed: () => ref.read(linkedPatientsProvider.notifier).sync(),
-                icon: const Icon(Icons.refresh_rounded),
-                tooltip: 'Refresh',
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: _StatBox(
-                  value: '${state.totalLinked}',
-                  label: 'Linked',
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _StatBox(
-                  value: '${state.withMoodData}',
-                  label: 'With mood data',
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _StatBox(
-                  value: '${state.withRiskFlags}',
-                  label: 'Risk flags',
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Text(
-            state.lastSyncAt == null
-                ? 'Last synced: never'
-                : 'Last synced: ${_relativeTime(state.lastSyncAt!.toLocal())}',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          const SizedBox(height: 14),
-          if (state.patients.isEmpty)
-            const _EmptyState()
-          else
-            ...state.patients.map(
-              (patient) => _PatientCard(patient: patient),
-            ),
-          if (state.error != null) ...[
-            const SizedBox(height: 12),
-            Text(
-              state.error!,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.error,
                   ),
-            ),
-          ],
-        ],
+                  IconButton(
+                    onPressed: () => ref.read(linkedPatientsProvider.notifier).sync(),
+                    icon: const Icon(Icons.refresh_rounded),
+                    tooltip: 'Refresh',
+                  ),
+                ],
+              ),
+              SizedBox(height: layout.minorGap),
+              Row(
+                children: [
+                  Expanded(
+                    child: _StatBox(
+                      value: '${state.totalLinked}',
+                      label: 'Linked',
+                      icon: Icons.groups_2_rounded,
+                    ),
+                  ),
+                  SizedBox(width: layout.minorGap - 2),
+                  Expanded(
+                    child: _StatBox(
+                      value: '${state.withMoodData}',
+                      label: 'With mood data',
+                      icon: Icons.bar_chart_rounded,
+                    ),
+                  ),
+                  SizedBox(width: layout.minorGap - 2),
+                  Expanded(
+                    child: _StatBox(
+                      value: '${state.withRiskFlags}',
+                      label: 'Risk flags',
+                      icon: Icons.warning_amber_rounded,
+                    ),
+                  ),
+                ],
+              ),
+              SizedBox(height: layout.minorGap),
+              Text(
+                state.lastSyncAt == null
+                    ? 'Last synced: never'
+                    : 'Last synced: ${_relativeTime(state.lastSyncAt!.toLocal())}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              SizedBox(height: layout.sectionGap),
+              if (state.patients.isEmpty)
+                const _EmptyState()
+              else
+                ...state.patients.map((patient) => _PatientCard(patient: patient)),
+              if (state.error != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  state.error!,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }
 }
 
 class _StatBox extends StatelessWidget {
-  const _StatBox({required this.value, required this.label});
+  const _StatBox({
+    required this.value,
+    required this.label,
+    required this.icon,
+  });
 
   final String value;
   final String label;
+  final IconData icon;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    final theme = Theme.of(context);
+    return AnoraSectionCard(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFE0DED7)),
-      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(value, style: Theme.of(context).textTheme.titleLarge),
-          Text(label, style: Theme.of(context).textTheme.bodySmall),
+          Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primary.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(9),
+            ),
+            child: Icon(icon, size: 16, color: theme.colorScheme.primary),
+          ),
+          const SizedBox(height: 8),
+          Text(value, style: theme.textTheme.titleLarge),
+          Text(label, style: theme.textTheme.bodySmall),
         ],
       ),
     );
@@ -147,20 +170,21 @@ class _PatientCard extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
     final mood = patient.latestMood;
     final hasRisk = mood?.hasRiskFlags == true;
     final moodScore = mood?.moodScore;
     final trendPoints = patient.moodHistory.isNotEmpty
-      ? patient.moodHistory
-      : (moodScore != null ? <double>[moodScore] : const <double>[]);
+        ? patient.moodHistory
+        : (moodScore != null ? <double>[moodScore] : const <double>[]);
 
     Color? accent;
     if (hasRisk) {
-      accent = const Color(0xFFE38B7C);
+      accent = theme.colorScheme.error;
     } else if (moodScore != null && moodScore >= 0.62) {
-      accent = const Color(0xFF4D6B5B);
+      accent = theme.colorScheme.primary;
     } else if (moodScore != null && moodScore >= 0.40) {
-      accent = const Color(0xFF5B6F8F);
+      accent = theme.colorScheme.secondary;
     }
 
     final labels = mood?.moodLabels ?? const <String>[];
@@ -173,120 +197,109 @@ class _PatientCard extends ConsumerWidget {
         : trimmed.substring(0, trimmed.length >= 2 ? 2 : 1).toUpperCase();
 
     final moodColor = hasRisk
-        ? const Color(0xFFE38B7C)
+        ? theme.colorScheme.error
         : (moodScore != null && moodScore >= 0.62)
-            ? const Color(0xFF4D6B5B)
-            : const Color(0xFF5B6F8F);
+            ? theme.colorScheme.primary
+            : theme.colorScheme.secondary;
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFE0DED7)),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(14),
-        onLongPress: () => _showRenameDialog(context, ref, patient),
-        child: Container(
-          decoration: BoxDecoration(
-            border: accent == null
-                ? null
-                : Border(left: BorderSide(color: accent, width: 3.5)),
-            borderRadius: BorderRadius.circular(14),
-          ),
-          padding: const EdgeInsets.all(14),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              CircleAvatar(
-                backgroundColor: const Color(0xFFF1F0EB),
-                child: Text(initials),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      patient.patientLabel,
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 4),
-                    if (labels.isNotEmpty)
-                      Text(labels.join(' · '))
-                    else
-                      Text(
-                        'No mood data yet',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              fontStyle: FontStyle.italic,
-                            ),
-                      ),
-                    if (flags.isNotEmpty) ...[
-                      const SizedBox(height: 6),
-                      Wrap(
-                        spacing: 6,
-                        runSpacing: 6,
-                        children: flags
-                            .map(
-                              (flag) => Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 4,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFFE38B7C),
-                                  borderRadius: BorderRadius.circular(999),
-                                ),
-                                child: Text(
-                                  flag,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 11,
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: AnoraSectionCard(
+        padding: EdgeInsets.zero,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(20),
+          onLongPress: () => _showRenameDialog(context, ref, patient),
+          child: Container(
+            decoration: BoxDecoration(
+              border: accent == null
+                  ? null
+                  : Border(left: BorderSide(color: accent, width: 3.5)),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                CircleAvatar(
+                  backgroundColor: theme.colorScheme.primary.withValues(alpha: 0.12),
+                  child: Text(
+                    initials,
+                    style: theme.textTheme.labelLarge?.copyWith(color: theme.colorScheme.primary),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(patient.patientLabel, style: theme.textTheme.titleMedium),
+                      const SizedBox(height: 4),
+                      if (labels.isNotEmpty)
+                        Text(labels.join(' · '))
+                      else
+                        Text(
+                          'No mood data yet',
+                          style: theme.textTheme.bodySmall?.copyWith(fontStyle: FontStyle.italic),
+                        ),
+                      if (flags.isNotEmpty) ...[
+                        const SizedBox(height: 6),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: flags
+                              .map(
+                                (flag) => Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: theme.colorScheme.errorContainer.withValues(alpha: 0.95),
+                                    borderRadius: BorderRadius.circular(999),
+                                  ),
+                                  child: Text(
+                                    flag,
+                                    style: theme.textTheme.labelSmall?.copyWith(
+                                      color: theme.colorScheme.onErrorContainer,
+                                    ),
                                   ),
                                 ),
-                              ),
-                            )
-                            .toList(growable: false),
+                              )
+                              .toList(growable: false),
+                        ),
+                      ],
+                      const SizedBox(height: 8),
+                      Text(relative, style: theme.textTheme.bodySmall),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                SizedBox(
+                  width: 102,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      if (patient.hasMoodData)
+                        Text(
+                          '${((mood?.moodScore ?? 0) * 100).round()}%',
+                          style: TextStyle(
+                            color: moodColor,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 16,
+                          ),
+                        )
+                      else
+                        Text('No data', style: theme.textTheme.bodySmall),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        height: 30,
+                        child: _MoodSparkline(
+                          points: trendPoints,
+                          color: moodColor,
+                        ),
                       ),
                     ],
-                    const SizedBox(height: 8),
-                    Text(relative, style: Theme.of(context).textTheme.bodySmall),
-                  ],
+                  ),
                 ),
-              ),
-              const SizedBox(width: 12),
-              SizedBox(
-                width: 102,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    if (patient.hasMoodData)
-                      Text(
-                        '${((mood?.moodScore ?? 0) * 100).round()}%',
-                        style: TextStyle(
-                          color: moodColor,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 16,
-                        ),
-                      )
-                    else
-                      const Text(
-                        'No data',
-                        style: TextStyle(color: Color(0xFFB0A898), fontSize: 12),
-                      ),
-                    const SizedBox(height: 8),
-                    SizedBox(
-                      height: 30,
-                      child: _MoodSparkline(
-                        points: trendPoints,
-                        color: moodColor,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -358,30 +371,31 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 320,
-      child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(
-              Icons.person_add_rounded,
-              size: 52,
-              color: Color(0xFF5B6F8F),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'No linked patients yet',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Share your Clinician ID from the Profile tab.\n'
-              'Patients link from the app Settings screen.',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-          ],
+    final theme = Theme.of(context);
+    return AnoraSectionCard(
+      emphasis: true,
+      child: SizedBox(
+        height: 280,
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.person_add_rounded,
+                size: 52,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(height: 12),
+              Text('No linked patients yet', style: theme.textTheme.titleLarge),
+              const SizedBox(height: 6),
+              Text(
+                'Share your Clinician ID from the Profile tab.\n'
+                'Patients link from the app Settings screen.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium,
+              ),
+            ],
+          ),
         ),
       ),
     );

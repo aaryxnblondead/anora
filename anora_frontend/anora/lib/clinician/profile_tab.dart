@@ -9,6 +9,7 @@ import '../services/clinician_crypto_service.dart';
 import '../services/storage_service.dart';
 import '../state/clinician_state.dart';
 import '../state/role_controller.dart';
+import '../theme/anora_theme.dart';
 
 class ProfileTab extends ConsumerWidget {
   const ProfileTab({super.key});
@@ -17,12 +18,16 @@ class ProfileTab extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final profile = ClinicianProfile.fromStorage();
     final roleController = ref.read(roleProvider.notifier);
+    final layout = AnoraLayoutSpec.of(context);
 
     return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 24, 20, 16),
+      padding: layout.screenPadding(top: layout.minorGap + 4, bottom: layout.bottomPadding - 4),
       children: [
-        Text('Profile', style: Theme.of(context).textTheme.headlineMedium),
-        const SizedBox(height: 12),
+        const AnoraScreenHeader(
+          title: 'Profile',
+          subtitle: 'Manage identity, encryption keys, and your secure session controls.',
+        ),
+        SizedBox(height: layout.sectionGap - 2),
         _SectionCard(
           title: 'Identity',
           children: [
@@ -34,7 +39,7 @@ class ProfileTab extends ConsumerWidget {
             ),
           ],
         ),
-        const SizedBox(height: 14),
+        SizedBox(height: layout.sectionGap),
         _SectionCard(
           title: 'Your Clinician ID',
           children: [
@@ -42,8 +47,8 @@ class ProfileTab extends ConsumerWidget {
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFFE0DED7)),
-                color: Colors.white,
+                border: Border.all(color: AnoraPalette.border),
+                color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.42),
               ),
               child: Row(
                 children: [
@@ -72,7 +77,7 @@ class ProfileTab extends ConsumerWidget {
             Text('Share this ID with patients', style: Theme.of(context).textTheme.bodySmall),
           ],
         ),
-        const SizedBox(height: 14),
+        SizedBox(height: layout.sectionGap),
         _SectionCard(
           title: 'Encryption',
           children: [
@@ -101,7 +106,7 @@ class ProfileTab extends ConsumerWidget {
             ),
           ],
         ),
-        const SizedBox(height: 14),
+        SizedBox(height: layout.sectionGap),
         _SectionCard(
           title: 'Session',
           children: [
@@ -155,9 +160,9 @@ class ProfileTab extends ConsumerWidget {
                 constraints: const BoxConstraints(maxHeight: 280),
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.42),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFFE0DED7)),
+                  border: Border.all(color: AnoraPalette.border),
                 ),
                 child: SingleChildScrollView(
                   child: SelectableText(pem, style: Theme.of(context).textTheme.bodySmall),
@@ -242,19 +247,7 @@ class _SectionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF1F0EB),
-        borderRadius: BorderRadius.circular(18),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x14000000),
-            blurRadius: 10,
-            offset: Offset(0, 4),
-          ),
-        ],
-      ),
+    return AnoraSectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -407,7 +400,7 @@ class _HoldToConfirmButtonState extends State<_HoldToConfirmButton> {
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 14),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFF1F0EB),
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.35),
                   borderRadius: BorderRadius.circular(16),
                   border: Border.all(color: Theme.of(context).colorScheme.error),
                 ),

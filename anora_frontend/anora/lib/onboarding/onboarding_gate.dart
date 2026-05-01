@@ -9,6 +9,7 @@ import '../services/clinician_push_registration_service.dart';
 import '../services/secure_link_service.dart';
 import '../services/storage_service.dart';
 import '../state/role_controller.dart';
+import '../theme/anora_theme.dart';
 import '../widgets/app_lock_gate.dart';
 import 'clinician_onboarding_screen.dart';
 import 'patient_onboarding_screen.dart';
@@ -126,8 +127,11 @@ class _ClinicianSessionBootstrapState
       future: _bootstrapFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
-          return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
+          return const AnoraBackdrop(
+            child: Scaffold(
+              backgroundColor: Colors.transparent,
+              body: Center(child: CircularProgressIndicator()),
+            ),
           );
         }
 

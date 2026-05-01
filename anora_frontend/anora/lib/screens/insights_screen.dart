@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/journal_entry.dart';
 import '../services/storage_service.dart';
+import '../theme/anora_theme.dart';
 
 final _journalEntriesProvider = StreamProvider<List<JournalEntry>>((ref) {
   final box = StorageService.instance.journalBox;
@@ -32,7 +33,7 @@ class InsightsScreen extends ConsumerWidget {
 
     return SafeArea(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 24, 20, 12),
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 12),
         child: entriesAsync.when(
           data: (entries) => _InsightsContent(entries: entries),
           loading: () => const Center(child: CircularProgressIndicator()),
@@ -58,16 +59,23 @@ class _InsightsContent extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Insights', style: Theme.of(context).textTheme.headlineMedium),
-        const SizedBox(height: 6),
-        Text(
-          'Your last seven days, at a glance.',
-          style: Theme.of(context).textTheme.bodyMedium,
+        const AnoraStaggeredReveal(
+          order: 0,
+          child: AnoraScreenHeader(
+            title: 'Insights',
+            subtitle: 'Track patterns over the last seven days with private, on-device analytics.',
+          ),
         ),
         const SizedBox(height: 20),
-        _MoodTrendCard(points: trendPoints),
+        AnoraStaggeredReveal(
+          order: 1,
+          child: _MoodTrendCard(points: trendPoints),
+        ),
         const SizedBox(height: 20),
-        _UnstuckStatsCard(),
+        const AnoraStaggeredReveal(
+          order: 2,
+          child: _UnstuckStatsCard(),
+        ),
         const SizedBox(height: 20),
         Text('Recent entries', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 12),
@@ -137,12 +145,9 @@ class _MoodTrendCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final lineColor = Theme.of(context).colorScheme.secondary;
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF1F0EB),
-        borderRadius: BorderRadius.circular(18),
-      ),
+    return AnoraSectionCard(
+      emphasis: true,
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -182,7 +187,15 @@ class _MoodTrendCard extends StatelessWidget {
         maxX: points.length - 1,
         minY: 0,
         maxY: 1,
-        gridData: FlGridData(show: false),
+        gridData: FlGridData(
+          show: true,
+          drawVerticalLine: false,
+          horizontalInterval: 0.25,
+          getDrawingHorizontalLine: (_) => const FlLine(
+            color: Color(0x22174067),
+            strokeWidth: 1,
+          ),
+        ),
         borderData: FlBorderData(show: false),
         lineBarsData: [
           LineChartBarData(
@@ -199,7 +212,7 @@ class _MoodTrendCard extends StatelessWidget {
                     radius: 3,
                     color: Colors.transparent,
                     strokeWidth: 1.5,
-                    strokeColor: const Color(0xFFCCC8C0),
+                    strokeColor: AnoraPalette.border,
                   );
                 }
                 return FlDotCirclePainter(
@@ -269,9 +282,16 @@ class _EntryTileState extends State<_EntryTile> {
       child: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: AnoraPalette.panel,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: const Color(0xFFE0DED7)),
+          border: Border.all(color: AnoraPalette.border),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x0F163252),
+              blurRadius: 14,
+              offset: Offset(0, 5),
+            ),
+          ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -381,12 +401,7 @@ class _UnstuckStatsCard extends StatelessWidget {
         ? 0
         : (recent.map((s) => (s['duration_seconds'] as num?)?.toDouble() ?? 0).reduce((a, b) => a + b) / total);
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF1F0EB),
-        borderRadius: BorderRadius.circular(18),
-      ),
+    return AnoraSectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -435,25 +450,20 @@ class _EmptyStateCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: const Color(0xFFF1F0EB),
-          borderRadius: BorderRadius.circular(18),
-        ),
+      child: AnoraSectionCard(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.white,
+                color: AnoraPalette.panelSoft,
                 borderRadius: BorderRadius.circular(16),
               ),
               child: const Icon(
                 Icons.self_improvement_rounded,
                 size: 30,
-                color: Color(0xFF5B6F8F),
+                color: AnoraPalette.secondary,
               ),
             ),
             const SizedBox(height: 12),

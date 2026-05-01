@@ -604,27 +604,23 @@ docs/               # Architecture diagrams and research papers
 
 ### v2.1 Roadmap (Q3 2026)
 
-- [ ] **Tokenizer Integration:** Replace simulated embeddings with actual JSON tokenizer → TFLite pipeline
-  - Current: `_embeddingForText()` uses seeded random values
-  - Required: Wire `assets/models/tokenizer.json` for real token tensors
-  - Impact: Gradients will be derived from actual model inference
+- [x] **Tokenizer Integration:** JSON tokenizer → TFLite tensor pipeline for FL embeddings
+  - Status: FL client now encodes text using `tokenizer.json` and runs TFLite to derive embedding vectors
+  - Impact: Local training gradients are now model-derived in the normal execution path
 
-- [ ] **Model Hot-Reload:** Live model version updates without app restart
-  - Current: Version tracking works, interpreter not reloaded at runtime
-  - Required: Close interpreter, load base64-decoded model, re-initialize
-  - Impact: Clients get new model weights immediately
+- [x] **Model Hot-Reload:** Live model version updates without app restart
+  - Status: Implemented in FL client service via base64 model decode + interpreter reinitialization
+  - Impact: Clients can apply newly deployed model weights immediately at runtime
 
-- [ ] **Clinician Portal (Web):** React/Vue frontend with encrypted report decryption
-  - Current: Doctors can receive and decrypt on mobile only
-  - Required: Build web UI with RSA private key management
-  - Impact: Desktop-friendly report viewing for clinicians
+- [x] **Clinician Portal (Web):** Desktop clinician workspace
+  - Status: Added responsive Flutter web clinician portal shell with secure session bootstrap
+  - Impact: Desktop-friendly patient feed, list, and profile workflows
 
 ### v2.2 Roadmap (Q4 2026)
 
-- [ ] **Dynamic Round Assignment:** Server-side FL round management
-  - Current: Hardcoded to round_id=0
-  - Required: Client queries `/fl/rounds/active` before gradient submission
-  - Impact: Support multiple simultaneous FL rounds for production scaling
+- [x] **Dynamic Round Assignment:** Server-side FL round management
+  - Status: Implemented with `GET /fl/rounds/active` + client lookup before gradient submission
+  - Impact: Round rotation can happen server-side without app updates
 
 - [ ] **Advanced Convergence Monitoring:** Real-time FL training analytics
   - Gradient distribution analysis
@@ -635,9 +631,9 @@ docs/               # Architecture diagrams and research papers
 
 | Limitation | Impact | Workaround | Target Fix |
 | :--- | :--- | :--- | :--- |
-| **Simulated Embeddings** | FL gradients not derived from real model inference | Documented in release notes as "beta training" | v2.1 |
-| **Model Interpreter Not Reloaded** | Clients must restart app for new model weights | App restart after update | v2.1 |
-| **Single Round (round_id=0)** | Can't run parallel FL rounds | Not needed for initial rollout | v2.2 |
+| **Fallback Embedding Path** | If tokenizer/TFLite inference fails locally, deterministic fallback embedding is used to avoid blocking FL loop | Runtime logs + retry next cycle | v2.2 hardening |
+| **Model Blob Size in Local Settings** | Downloaded model bytes are persisted as base64 and may increase encrypted settings storage footprint | Periodic model cleanup for superseded versions | v2.2 |
+| **Sharding Policy Tuning** | Weighted rendezvous sharding is implemented; adaptive weights and cohort objectives are still heuristic | Manual policy tuning via round parameters | v2.2 |
 | **Risk Detection Heuristic** | Not clinically validated for diagnostic use | AI is assistive, not diagnostic; manual review required | Post-launch clinical validation |
 
 ## 13. Licensing & Citation

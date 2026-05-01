@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../state/clinician_state.dart';
+import '../theme/anora_theme.dart';
 import 'patient_feed_tab.dart';
 import 'patient_list_tab.dart';
 import 'profile_tab.dart';
@@ -24,13 +25,14 @@ class _ClinicianShellState extends ConsumerState<ClinicianShell>
     with WidgetsBindingObserver {
   int _selectedIndex = 0;
   late final List<Widget> _tabs;
+  late final PageController _pageController;
   Timer? _periodicSyncTimer;
-  int _lastAlertCount = 0;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _pageController = PageController();
 
     _tabs = [
       const PatientListTab(),
@@ -47,6 +49,7 @@ class _ClinicianShellState extends ConsumerState<ClinicianShell>
 
   @override
   void dispose() {
+    _pageController.dispose();
     _periodicSyncTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -79,13 +82,16 @@ class _ClinicianShellState extends ConsumerState<ClinicianShell>
         );
       }
     }
-    _lastAlertCount = currentState.alerts.length;
   }
 
   void _onItemTapped(int index) {
-    setState(() {
-      _selectedIndex = index;
-    });
+    if (index == _selectedIndex) return;
+    setState(() => _selectedIndex = index);
+    _pageController.animateToPage(
+      index,
+      duration: AnoraMotion.standard,
+      curve: AnoraMotion.standardCurve,
+    );
   }
 
   Future<void> _generateAndShowInviteCode() async {
@@ -142,40 +148,69 @@ class _ClinicianShellState extends ConsumerState<ClinicianShell>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Clinician Portal'),
-        actions: _selectedIndex == 0
-            ? [
-                IconButton(
-                  icon: const Icon(Icons.person_add),
-                  onPressed: _generateAndShowInviteCode,
-                  tooltip: 'Generate Patient Invite Code',
+    final unreadAlerts = ref.watch(clinicianReportsProvider.select((s) => s.unreadAlertCount));
+
+    return AnoraBackdrop(
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        appBar: AppBar(
+          title: const Text('Clinician Portal'),
+          actions: [
+            if (unreadAlerts > 0)
+              Padding(
+                padding: const EdgeInsets.only(right: 4),
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.error,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Text(
+                      '$unreadAlerts alert${unreadAlerts == 1 ? '' : 's'}',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: Theme.of(context).colorScheme.onError,
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                  ),
                 ),
-              ]
-            : null,
-      ),
-      body: IndexedStack(
-        index: _selectedIndex,
-        children: _tabs,
-      ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _selectedIndex,
-        onTap: _onItemTapped,
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.dashboard),
-            label: 'Patients',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.feed),
-            label: 'Updates',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.settings),
-            label: 'Settings',
-          ),
-        ],
+              ),
+            if (_selectedIndex == 0)
+              IconButton(
+                icon: const Icon(Icons.person_add_rounded),
+                onPressed: _generateAndShowInviteCode,
+                tooltip: 'Generate Patient Invite Code',
+              ),
+          ],
+        ),
+        body: PageView(
+          controller: _pageController,
+          physics: const NeverScrollableScrollPhysics(),
+          onPageChanged: (index) => setState(() => _selectedIndex = index),
+          children: _tabs,
+        ),
+        bottomNavigationBar: NavigationBar(
+          selectedIndex: _selectedIndex,
+          onDestinationSelected: _onItemTapped,
+          destinations: const [
+            NavigationDestination(
+              icon: Icon(Icons.groups_rounded),
+              selectedIcon: Icon(Icons.groups_2_rounded),
+              label: 'Patients',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.monitor_heart_outlined),
+              selectedIcon: Icon(Icons.monitor_heart_rounded),
+              label: 'Updates',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.person_outline_rounded),
+              selectedIcon: Icon(Icons.person_rounded),
+              label: 'Profile',
+            ),
+          ],
+        ),
       ),
     );
   }

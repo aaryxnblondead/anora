@@ -7,6 +7,7 @@ import '../clinician/clinician_shell.dart';
 import '../services/clinician_crypto_service.dart';
 import '../services/secure_link_service.dart';
 import '../services/storage_service.dart';
+import '../theme/anora_theme.dart';
 
 class ClinicianOnboardingScreen extends StatefulWidget {
   const ClinicianOnboardingScreen({super.key});
@@ -49,8 +50,8 @@ class _ClinicianOnboardingScreenState extends State<ClinicianOnboardingScreen> {
 
   Future<void> _nextPage() async {
     await _pageController.nextPage(
-      duration: const Duration(milliseconds: 260),
-      curve: Curves.easeOutCubic,
+      duration: AnoraMotion.standard,
+      curve: AnoraMotion.standardCurve,
     );
   }
 
@@ -177,61 +178,72 @@ class _ClinicianOnboardingScreenState extends State<ClinicianOnboardingScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final layout = AnoraLayoutSpec.of(context);
 
-    return Scaffold(
-      backgroundColor: theme.colorScheme.surface,
-      body: SafeArea(
-        child: Column(
-          children: [
-            const SizedBox(height: 14),
-            _StepDots(currentIndex: _pageIndex),
-            const SizedBox(height: 12),
-            Expanded(
-              child: PageView(
-                controller: _pageController,
-                physics: const NeverScrollableScrollPhysics(),
-                onPageChanged: (index) {
-                  setState(() => _pageIndex = index);
-                  if (index == 2) {
-                    _prepareClinicianId();
-                  }
-                },
-                children: [
-                  _IdentityStep(
-                    nameController: _nameController,
-                    credentialsController: _credentialsController,
-                    onNext: _saveIdentityAndContinue,
+    return AnoraBackdrop(
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: SafeArea(
+          child: Column(
+            children: [
+              Padding(
+                padding: layout.screenPadding(top: layout.topPadding, bottom: layout.minorGap),
+                child: const AnoraStaggeredReveal(
+                  order: 0,
+                  child: AnoraScreenHeader(
+                    title: 'Clinician Onboarding',
+                    subtitle: 'Set up secure keys, claim your clinician ID, and access the dashboard.',
                   ),
-                  _KeyStep(
-                    isBusy: _isBusy,
-                    showImportField: _showImportField,
-                    importController: _importPrivateKeyController,
-                    publicKeyPem: _publicKeyPem,
-                    onGenerate: _generateKeypair,
-                    onImportToggle: () => setState(() => _showImportField = !_showImportField),
-                    onImport: _importPrivateKey,
-                    onNext: ClinicianCryptoService.instance.hasKeypair ? _nextPage : null,
-                  ),
-                  _ClinicianIdStep(
-                    clinicianId: _clinicianId,
-                    onCopy: () async {
-                      final messenger = ScaffoldMessenger.of(context);
-                      final id = _clinicianId;
-                      if (id == null || id.isEmpty) return;
-                      await Clipboard.setData(ClipboardData(text: id));
-                      if (!mounted) return;
-                      messenger.showSnackBar(
-                        const SnackBar(content: Text('Clinician ID copied.')),
-                      );
-                    },
-                    onNext: _nextPage,
-                  ),
-                  _ReadyStep(onFinish: _completeOnboarding),
-                ],
+                ),
               ),
-            ),
-          ],
+              _StepDots(currentIndex: _pageIndex),
+              SizedBox(height: layout.minorGap + 2),
+              Expanded(
+                child: PageView(
+                  controller: _pageController,
+                  physics: const NeverScrollableScrollPhysics(),
+                  onPageChanged: (index) {
+                    setState(() => _pageIndex = index);
+                    if (index == 2) {
+                      _prepareClinicianId();
+                    }
+                  },
+                  children: [
+                    _IdentityStep(
+                      nameController: _nameController,
+                      credentialsController: _credentialsController,
+                      onNext: _saveIdentityAndContinue,
+                    ),
+                    _KeyStep(
+                      isBusy: _isBusy,
+                      showImportField: _showImportField,
+                      importController: _importPrivateKeyController,
+                      publicKeyPem: _publicKeyPem,
+                      onGenerate: _generateKeypair,
+                      onImportToggle: () => setState(() => _showImportField = !_showImportField),
+                      onImport: _importPrivateKey,
+                      onNext: ClinicianCryptoService.instance.hasKeypair ? _nextPage : null,
+                    ),
+                    _ClinicianIdStep(
+                      clinicianId: _clinicianId,
+                      onCopy: () async {
+                        final messenger = ScaffoldMessenger.of(context);
+                        final id = _clinicianId;
+                        if (id == null || id.isEmpty) return;
+                        await Clipboard.setData(ClipboardData(text: id));
+                        if (!mounted) return;
+                        messenger.showSnackBar(
+                          const SnackBar(content: Text('Clinician ID copied.')),
+                        );
+                      },
+                      onNext: _nextPage,
+                    ),
+                    _ReadyStep(onFinish: _completeOnboarding),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -246,17 +258,18 @@ class _StepDots extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final layout = AnoraLayoutSpec.of(context);
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: List.generate(
         4,
         (index) => AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          width: currentIndex == index ? 18 : 8,
+          duration: AnoraMotion.quick,
+          width: currentIndex == index ? (layout.isCompact ? 16 : 18) : 8,
           height: 8,
-          margin: const EdgeInsets.symmetric(horizontal: 4),
+          margin: EdgeInsets.symmetric(horizontal: layout.isCompact ? 3 : 4),
           decoration: BoxDecoration(
-            color: currentIndex == index ? theme.colorScheme.primary : const Color(0xFFE0DED7),
+            color: currentIndex == index ? theme.colorScheme.primary : AnoraPalette.border,
             borderRadius: BorderRadius.circular(999),
           ),
         ),
@@ -278,32 +291,39 @@ class _IdentityStep extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final layout = AnoraLayoutSpec.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+      padding: layout.screenPadding(top: layout.minorGap, bottom: layout.bottomPadding - 2),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('Your Identity', style: theme.textTheme.headlineMedium),
-          const SizedBox(height: 8),
-          Text('Set up your profile', style: theme.textTheme.bodyLarge),
-          const SizedBox(height: 16),
-          TextField(
-            controller: nameController,
-            decoration: const InputDecoration(labelText: 'Full name'),
+          const AnoraScreenHeader(
+            title: 'Your Identity',
+            subtitle: 'Store your professional details locally on this device.',
           ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: credentialsController,
-            decoration: const InputDecoration(
-              labelText: 'Credentials / specialty',
-              hintText: 'e.g. MD, Psychiatry',
+          SizedBox(height: layout.sectionGap),
+          AnoraSectionCard(
+            child: Column(
+              children: [
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(labelText: 'Full name'),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: credentialsController,
+                  decoration: const InputDecoration(
+                    labelText: 'Credentials / specialty',
+                    hintText: 'e.g. MD, Psychiatry',
+                  ),
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 10),
+          SizedBox(height: layout.minorGap),
           Text(
             'Stored locally only. Never sent to any server.',
-            style: theme.textTheme.bodySmall,
+            style: Theme.of(context).textTheme.bodySmall,
           ),
           const Spacer(),
           ValueListenableBuilder<TextEditingValue>(
@@ -345,23 +365,17 @@ class _KeyStep extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final layout = AnoraLayoutSpec.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+      padding: layout.screenPadding(top: layout.minorGap, bottom: layout.bottomPadding - 2),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('Private Connection Setup', style: theme.textTheme.headlineMedium),
-          const SizedBox(height: 8),
-          Text(
-            'Prepare secure sharing',
-            style: theme.textTheme.titleLarge,
+          const AnoraScreenHeader(
+            title: 'Private Connection Setup',
+            subtitle: 'Prepare encrypted sharing credentials for patient reports.',
           ),
-          const SizedBox(height: 6),
-          Text(
-            'Anora handles secure handshakes in the background so sharing stays private.',
-            style: theme.textTheme.bodyMedium,
-          ),
-          const SizedBox(height: 16),
+          SizedBox(height: layout.sectionGap),
           _OptionCard(
             title: 'Generate on device',
             child: FilledButton(
@@ -369,7 +383,7 @@ class _KeyStep extends StatelessWidget {
               child: Text(isBusy ? 'Working...' : 'Prepare Private Connection'),
             ),
           ),
-          const SizedBox(height: 12),
+          SizedBox(height: layout.minorGap + 2),
           _OptionCard(
             title: 'Import recovery credentials',
             child: Column(
@@ -380,7 +394,7 @@ class _KeyStep extends StatelessWidget {
                   child: const Text('Import Recovery File'),
                 ),
                 if (showImportField) ...[
-                  const SizedBox(height: 8),
+                  SizedBox(height: layout.minorGap),
                   TextField(
                     controller: importController,
                     minLines: 8,
@@ -389,7 +403,7 @@ class _KeyStep extends StatelessWidget {
                       hintText: 'Paste recovery credentials here',
                     ),
                   ),
-                  const SizedBox(height: 8),
+                  SizedBox(height: layout.minorGap),
                   FilledButton.tonal(
                     onPressed: isBusy ? null : onImport,
                     child: const Text('Validate and Save'),
@@ -398,21 +412,16 @@ class _KeyStep extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(height: 12),
+          SizedBox(height: layout.minorGap + 2),
           if (publicKeyPem != null && publicKeyPem!.isNotEmpty)
-            Container(
+            AnoraSectionCard(
               padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF1F0EB),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFFE0DED7)),
-              ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     children: [
-                      Icon(Icons.check_circle_rounded, color: theme.colorScheme.primary),
+                      Icon(Icons.check_circle_rounded, color: Theme.of(context).colorScheme.primary),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -454,33 +463,25 @@ class _ClinicianIdStep extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final layout = AnoraLayoutSpec.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+      padding: layout.screenPadding(top: layout.minorGap, bottom: layout.bottomPadding - 2),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('Your Clinician ID', style: theme.textTheme.headlineMedium),
-          const SizedBox(height: 8),
-          Text('Your unique ID', style: theme.textTheme.titleLarge),
-          const SizedBox(height: 6),
-          Text(
-            'Patients use this ID to securely link and share updates.',
-            style: theme.textTheme.bodyMedium,
+          const AnoraScreenHeader(
+            title: 'Your Clinician ID',
+            subtitle: 'Patients use this unique ID to securely link with your dashboard.',
           ),
-          const SizedBox(height: 16),
-          Container(
+          SizedBox(height: layout.sectionGap),
+          AnoraSectionCard(
             padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF1F0EB),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: const Color(0xFFE0DED7)),
-            ),
             child: Row(
               children: [
                 Expanded(
                   child: Text(
                     clinicianId ?? 'Generating...',
-                    style: theme.textTheme.bodyLarge,
+                    style: Theme.of(context).textTheme.bodyLarge,
                   ),
                 ),
                 IconButton(
@@ -490,7 +491,7 @@ class _ClinicianIdStep extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(height: 10),
+          SizedBox(height: layout.minorGap),
           Text(
             'This ID helps route private updates to your dashboard.',
             style: theme.textTheme.bodySmall,
@@ -510,19 +511,29 @@ class _ReadyStep extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final layout = AnoraLayoutSpec.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+      padding: layout.screenPadding(top: layout.minorGap, bottom: layout.bottomPadding - 2),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('You\'re ready', style: theme.textTheme.headlineMedium),
-          const SizedBox(height: 20),
-          Icon(Icons.verified_rounded, size: 64, color: theme.colorScheme.primary),
-          const SizedBox(height: 14),
-          _ReadyItem(text: 'Profile stored locally'),
-          _ReadyItem(text: 'Private connection prepared'),
-          _ReadyItem(text: 'Clinician ID ready'),
+          const AnoraScreenHeader(
+            title: 'You\'re ready',
+            subtitle: 'Your clinician workspace is configured and ready for secure care collaboration.',
+          ),
+          SizedBox(height: layout.sectionGap + 2),
+          AnoraSectionCard(
+            emphasis: true,
+            child: Column(
+              children: [
+                Icon(Icons.verified_rounded, size: 64, color: Theme.of(context).colorScheme.primary),
+                const SizedBox(height: 14),
+                _ReadyItem(text: 'Profile stored locally'),
+                _ReadyItem(text: 'Private connection prepared'),
+                _ReadyItem(text: 'Clinician ID ready'),
+              ],
+            ),
+          ),
           const Spacer(),
           FilledButton(
             onPressed: onFinish,
@@ -562,14 +573,8 @@ class _OptionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
+    return AnoraSectionCard(
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF1F0EB),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFE0DED7)),
-      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

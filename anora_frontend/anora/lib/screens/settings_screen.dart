@@ -10,6 +10,7 @@ import '../services/auth_service.dart';
 import '../services/secure_link_service.dart';
 import '../services/storage_service.dart';
 import '../state/settings_controller.dart';
+import '../theme/anora_theme.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -206,111 +207,117 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
     return SafeArea(
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
         children: [
-          Text('Settings', style: Theme.of(context).textTheme.headlineMedium),
-          const SizedBox(height: 6),
-          Text(
-            'Your privacy stays on-device. Adjust your comfort level here.',
-            style: Theme.of(context).textTheme.bodyMedium,
+          const AnoraStaggeredReveal(
+            order: 0,
+            child: AnoraScreenHeader(
+              title: 'Settings',
+              subtitle: 'Tune privacy, security, and wellness preferences for your daily flow.',
+            ),
           ),
           const SizedBox(height: 20),
-          _SectionCard(
-            title: 'Privacy',
-            children: [
-              _SettingRow(
-                title: 'Face/Touch unlock',
-                subtitle: 'Require device authentication to open the app.',
-                trailing: Switch.adaptive(
-                  value: settings.biometricsEnabled,
-                  onChanged: (value) async {
-                    if (value) {
-                      final available =
-                          await AuthService.instance.canCheckBiometrics();
-                      if (!available) {
-                        if (!context.mounted) return;
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Biometrics are not available.'),
-                          ),
+          AnoraStaggeredReveal(
+            order: 1,
+            child: _SectionCard(
+              title: 'Privacy',
+              children: [
+                _SettingRow(
+                  title: 'Face/Touch unlock',
+                  subtitle: 'Require device authentication to open the app.',
+                  trailing: Switch.adaptive(
+                    value: settings.biometricsEnabled,
+                    onChanged: (value) async {
+                      if (value) {
+                        final available =
+                            await AuthService.instance.canCheckBiometrics();
+                        if (!available) {
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Biometrics are not available.'),
+                            ),
+                          );
+                          return;
+                        }
+
+                        final authenticated =
+                            await AuthService.instance.authenticate(
+                          reason: 'Enable biometric unlock for Anora.',
                         );
-                        return;
+
+                        if (!authenticated) {
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Authentication canceled.'),
+                            ),
+                          );
+                          return;
+                        }
                       }
 
-                      final authenticated =
-                          await AuthService.instance.authenticate(
-                        reason: 'Enable biometric unlock for Anora.',
-                      );
-
-                      if (!authenticated) {
-                        if (!context.mounted) return;
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Authentication canceled.'),
-                          ),
-                        );
-                        return;
+                      await controller.setBiometrics(value);
+                      if (settings.hapticsEnabled || value) {
+                        HapticFeedback.selectionClick();
                       }
-                    }
-
-                    await controller.setBiometrics(value);
-                    if (settings.hapticsEnabled || value) {
-                      HapticFeedback.selectionClick();
-                    }
-                  },
+                    },
+                  ),
                 ),
-              ),
-              const Divider(),
-              _SettingRow(
-                title: 'Auto-lock',
-                subtitle: 'Lock the app after 2 minutes of inactivity.',
-                trailing: Switch.adaptive(
-                  value: settings.autoLockEnabled,
-                  onChanged: (value) async {
-                    await controller.setAutoLock(value);
-                    if (settings.hapticsEnabled) {
-                      HapticFeedback.selectionClick();
-                    }
-                  },
+                const Divider(),
+                _SettingRow(
+                  title: 'Auto-lock',
+                  subtitle: 'Lock the app after 2 minutes of inactivity.',
+                  trailing: Switch.adaptive(
+                    value: settings.autoLockEnabled,
+                    onChanged: (value) async {
+                      await controller.setAutoLock(value);
+                      if (settings.hapticsEnabled) {
+                        HapticFeedback.selectionClick();
+                      }
+                    },
+                  ),
                 ),
-              ),
-              const Divider(),
-              _SettingRow(
-                title: linkedClinicianId == null ? 'Private Connection' : 'Securely Linked',
-                subtitle: linkedClinicianId == null
-                    ? 'Link your clinician by ID.'
-                    : 'Connected to clinician ID: $linkedClinicianId',
-                trailing: const Icon(Icons.chevron_right_rounded),
-                onTap: _showLinkClinicianDialog,
-              ),
-              const Divider(),
-              _SettingRow(
-                title: 'Share private summary',
-                subtitle: 'Send a privacy-preserving summary to your clinician.',
-                trailing: const Icon(Icons.chevron_right_rounded),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const ShareReportScreen()),
+                const Divider(),
+                _SettingRow(
+                  title: linkedClinicianId == null ? 'Private Connection' : 'Securely Linked',
+                  subtitle: linkedClinicianId == null
+                      ? 'Link your clinician by ID.'
+                      : 'Connected to clinician ID: $linkedClinicianId',
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: _showLinkClinicianDialog,
                 ),
-              ),
-              const Divider(),
-              _SettingRow(
-                title: 'Allow clinician signals',
-                subtitle: 'Opt in to send brief alerts to your clinician when repeated high-distress sessions occur.',
-                trailing: Switch.adaptive(
-                  value: settings.clinicianOptIn,
-                  onChanged: (value) async {
-                    await controller.setClinicianOptIn(value);
-                    if (settings.hapticsEnabled && value) {
-                      HapticFeedback.selectionClick();
-                    }
-                  },
+                const Divider(),
+                _SettingRow(
+                  title: 'Share private summary',
+                  subtitle: 'Send a privacy-preserving summary to your clinician.',
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const ShareReportScreen()),
+                  ),
                 ),
-              ),
-            ],
+                const Divider(),
+                _SettingRow(
+                  title: 'Allow clinician signals',
+                  subtitle: 'Opt in to send brief alerts to your clinician when repeated high-distress sessions occur.',
+                  trailing: Switch.adaptive(
+                    value: settings.clinicianOptIn,
+                    onChanged: (value) async {
+                      await controller.setClinicianOptIn(value);
+                      if (settings.hapticsEnabled && value) {
+                        HapticFeedback.selectionClick();
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: 16),
-          _SectionCard(
+          AnoraStaggeredReveal(
+            order: 2,
+            child: _SectionCard(
             title: 'Wellness',
             children: [
               _SettingRow(
@@ -355,9 +362,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ),
               ),
             ],
+            ),
           ),
           const SizedBox(height: 16),
-          _SectionCard(
+          AnoraStaggeredReveal(
+            order: 3,
+            child: _SectionCard(
             title: 'Storage',
             children: [
               _SettingRow(
@@ -384,23 +394,27 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 accentColor: const Color(0xFFE38B7C),
               ),
             ],
+            ),
           ),
           const SizedBox(height: 16),
-          _SectionCard(
+          AnoraStaggeredReveal(
+            order: 4,
+            child: const _SectionCard(
             title: 'About',
             children: [
               _SettingRow(
                 title: 'Version',
                 subtitle: '1.0.0 (MVP)',
-                trailing: const SizedBox.shrink(),
+                trailing: SizedBox.shrink(),
               ),
-              const Divider(),
+              Divider(),
               _SettingRow(
                 title: 'Privacy promise',
                 subtitle: 'All text stays on your device.',
-                trailing: const Icon(Icons.lock_outline_rounded),
+                trailing: Icon(Icons.lock_outline_rounded),
               ),
             ],
+            ),
           ),
         ],
       ),
@@ -416,21 +430,7 @@ class _SectionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOut,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF1F0EB),
-        borderRadius: BorderRadius.circular(18),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x14000000),
-            blurRadius: 10,
-            offset: Offset(0, 4),
-          ),
-        ],
-      ),
+    return AnoraSectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -474,7 +474,7 @@ class _SettingRow extends StatelessWidget {
                 children: [
                   Text(
                     title,
-                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
                           color: accentColor,
                         ),
                   ),
@@ -512,7 +512,7 @@ class _EraseSheet extends StatelessWidget {
         top: 24,
       ),
       decoration: const BoxDecoration(
-        color: Color(0xFFF7F6F2),
+        color: Colors.white,
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       child: Column(

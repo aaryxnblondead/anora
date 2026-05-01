@@ -287,30 +287,30 @@ curl https://xydctnf6j6.us-east-1.awsapprunner.com/fl/dashboard/rounds | jq .
 - `fl_convergence_metrics`: Training metrics
 
 ⚠️ **Documented As MVP (Intentional)**
-- **Tokenizer integration**: Currently uses simulated embeddings (documented roadmap item for v2.1)
-- **Model hot-reload**: Version tracking works, runtime reload not implemented (can restart app)
-- **Dynamic round assignment**: Hardcoded to round 0 (clients don't query active round from server)
+- **Tokenizer integration**: FL client now uses tokenizer → TFLite embedding pipeline in normal path
+- **Model hot-reload persistence**: Runtime reload is implemented; persistence across restart is still being hardened
+- **Dynamic round orchestration**: Active-round client assignment now uses weighted rendezvous sharding policy
 
 ---
 
 ## 🎯 Known Limitations (v2 Roadmap)
 
-### Tokenizer Integration (v2.1 - Q3 2026)
-- **Current**: `_embeddingForText()` uses seeded random values
-- **Impact**: FL gradients are simulated, not real model-derived
-- **Fix Required**: Wire `assets/models/tokenizer.json` → TFLite tensor pipeline
-- **Timeline**: Post-launch enhancement
+### Tokenizer Pipeline Hardening (v2.1 - Q3 2026)
+- **Current**: Tokenizer → TFLite embedding path is implemented for FL local training
+- **Impact**: Gradients are model-derived in normal operation; fallback path remains for resilience
+- **Fix Required**: Add observability and auto-retry metrics for fallback rate monitoring
+- **Timeline**: Post-launch hardening
 
-### Model Hot-Reload (v2.1 - Q3 2026)
-- **Current**: Version tracking functional, interpreter not reloaded at runtime
-- **Impact**: Clients get new model weights only after app restart
-- **Fix Required**: Close interpreter, load new base64-decoded model, re-initialize
+### Model Weight Persistence (v2.1 - Q3 2026)
+- **Current**: Runtime hot-reload works when model bytes are received from backend
+- **Impact**: After app restart, client may temporarily run bundled model until next sync
+- **Fix Required**: Persist downloaded model bytes locally and load before bundled fallback
 - **Timeline**: Quality-of-life improvement
 
-### Dynamic Round Assignment (v2.2 - Q4 2026)
-- **Current**: Hardcoded to `round_id=0`
-- **Impact**: Can't run multiple simultaneous FL rounds
-- **Fix Required**: Client queries `/fl/rounds/active` before submitting gradients
+### Advanced Multi-Round Scheduling (v2.2 - Q4 2026)
+- **Current**: Client queries `/fl/rounds/active` with `patient_device_id`, and coordinator assigns rounds via weighted rendezvous hashing
+- **Impact**: Supports deterministic client sharding across simultaneous active rounds
+- **Fix Required**: Tune load penalties and assignment TTL based on production participation patterns
 - **Timeline**: Multi-round support for production scaling
 
 ---

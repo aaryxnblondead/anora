@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -8,6 +9,7 @@ import 'package:tflite_flutter/tflite_flutter.dart';
 
 import 'api_endpoint_service.dart';
 import 'storage_service.dart';
+import 'tokenizer_service.dart';
 
 /// Federated Learning Client Service
 ///
@@ -45,7 +47,8 @@ class FederatedLearningService {
   int _localTrainingSteps = 0;
   double _gradientNorm = 0.0;
   Interpreter? _interpreter;
-  static const int _embeddingDim = 512;
+  static const int _defaultEmbeddingDim = 11;
+  int _embeddingDim = _defaultEmbeddingDim;
 
   /// Initialize federated learning client
   Future<void> init({
@@ -53,11 +56,40 @@ class FederatedLearningService {
   }) async {
     _localModelVersion = appVersion ?? _localModelVersion;
     _lastUserInteraction = DateTime.now(); // Start with "just now"
+    await TokenizerService.instance.init();
+    await _restoreOrInitializeInterpreter();
+
+    final persistedVersion = StorageService.instance.loadDownloadedFlModelVersion();
+    if (persistedVersion != null && persistedVersion > _currentModelVersionInt) {
+      _currentModelVersionInt = persistedVersion;
+    }
+
     await _registerWithCoordinator();
+    _startIdleDetection();
+  }
+
+  Future<void> _restoreOrInitializeInterpreter() async {
+    final persistedModelB64 = StorageService.instance.loadDownloadedFlModelBase64();
+
+    if (persistedModelB64 != null && persistedModelB64.isNotEmpty) {
+      final restored = await _reloadInterpreterFromEncodedModel(
+        persistedModelB64,
+        persistModel: false,
+      );
+      if (restored) {
+        if (kDebugMode) {
+          print('[FL] Restored persisted FL model interpreter');
+        }
+        return;
+      }
+
+      await StorageService.instance.clearDownloadedFlModel();
+    }
+
     try {
       _interpreter = await Interpreter.fromAsset('assets/models/mobilebert_quant.tflite');
       if (kDebugMode) {
-        print('[FL] TFLite interpreter initialized');
+        print('[FL] TFLite interpreter initialized from bundled asset');
       }
     } catch (e) {
       _interpreter = null;
@@ -65,7 +97,6 @@ class FederatedLearningService {
         print('[FL] TFLite init skipped: $e');
       }
     }
-    _startIdleDetection();
   }
 
   /// Register this device with the FL coordinator
@@ -106,12 +137,27 @@ class FederatedLearningService {
       if (response.statusCode == 200) {
         final body = jsonDecode(response.body) as Map<String, dynamic>;
         final newVersion = body['version'] as int? ?? 0;
+        final weightsBase64 = body['base64_weights'] as String?;
 
         if (newVersion > _currentModelVersionInt) {
-          // In a real implementation, you would:
-          // 1. Decode base64_weights
-          // 2. Replace the local model file
-          // 3. Reload the interpreter
+          if (weightsBase64 == null || weightsBase64.isEmpty) {
+            if (kDebugMode) {
+              print('[FL] Model update skipped: no model bytes for version $newVersion');
+            }
+            return false;
+          }
+
+          final updated = await _reloadInterpreterFromEncodedModel(
+            weightsBase64,
+            persistModel: true,
+            version: newVersion,
+          );
+          if (!updated) {
+            if (kDebugMode) {
+              print('[FL] Model update skipped: failed to reload interpreter for version $newVersion');
+            }
+            return false;
+          }
 
           _currentModelVersionInt = newVersion;
           if (kDebugMode) {
@@ -126,6 +172,42 @@ class FederatedLearningService {
       }
     }
     return false;
+  }
+
+  Future<bool> _reloadInterpreterFromEncodedModel(
+    String encodedWeights, {
+    required bool persistModel,
+    int? version,
+  }) async {
+    try {
+      final bytes = base64Decode(encodedWeights);
+      final nextInterpreter = await Interpreter.fromBuffer(bytes);
+      final previousInterpreter = _interpreter;
+      _interpreter = nextInterpreter;
+      previousInterpreter?.close();
+
+      if (persistModel) {
+        final effectiveVersion = version ?? _currentModelVersionInt;
+        await StorageService.instance.saveDownloadedFlModel(
+          version: effectiveVersion,
+          base64Model: encodedWeights,
+        );
+      }
+
+      if (version != null && version > _currentModelVersionInt) {
+        _currentModelVersionInt = version;
+      }
+
+      if (kDebugMode) {
+        print('[FL] Interpreter hot-reloaded from downloaded model bytes (${bytes.length} bytes)');
+      }
+      return true;
+    } catch (e) {
+      if (kDebugMode) {
+        print('[FL] Interpreter hot-reload failed: $e');
+      }
+      return false;
+    }
   }
 
   /// Start detecting device idle state
@@ -220,7 +302,15 @@ class FederatedLearningService {
       // Lightweight on-device adaptation: train a small linear head and use
       // its gradients as the FL signal. This is a practical approximation of
       // backprop while keeping compute and memory bounded on mobile.
-      _accumulatedGradients.addAll(await _computeGradients(trainingData));
+      final gradients = await _computeGradients(trainingData);
+      if (gradients.isEmpty) {
+        if (kDebugMode) {
+          print('[FL] Skipping submission: no valid gradients produced');
+        }
+        return;
+      }
+
+      _accumulatedGradients.addAll(gradients);
       _gradientNorm = _computeGradientNorm(_accumulatedGradients);
 
       // Apply Secure Aggregation masking
@@ -275,7 +365,24 @@ class FederatedLearningService {
   /// 3. Backprop to get dW (weight gradients)
   /// 4. Return flattened gradient vector
   Future<List<double>> _computeGradients(List<String> trainingData) async {
-    if (trainingData.isEmpty) return List<double>.filled(_embeddingDim, 0.0);
+    if (trainingData.isEmpty) return const <double>[];
+
+    final embeddings = <List<double>>[];
+    int? embeddingSize;
+
+    for (final text in trainingData) {
+      final emb = await _embeddingForText(text);
+      if (emb.isEmpty) continue;
+
+      embeddingSize ??= emb.length;
+      embeddings.add(_resizeEmbedding(emb, embeddingSize));
+    }
+
+    if (embeddings.isEmpty || embeddingSize == null || embeddingSize <= 0) {
+      return const <double>[];
+    }
+
+    _embeddingDim = embeddingSize;
 
     // Load or initialize local head weights for personalization.
     final loaded = StorageService.instance.loadFlHeadWeights();
@@ -284,12 +391,10 @@ class FederatedLearningService {
         : List<double>.filled(_embeddingDim, 0.0);
 
     final accumulated = List<double>.filled(_embeddingDim, 0.0);
-    final random = math.Random.secure();
     const learningRate = 0.01;
     int steps = 0;
 
-    for (final text in trainingData) {
-      final emb = await _embeddingForText(text, random);
+    for (final emb in embeddings) {
       final prediction = _dot(head, emb);
       final target = 0.0;
       final error = prediction - target;
@@ -313,21 +418,191 @@ class FederatedLearningService {
     return accumulated;
   }
 
-  Future<List<double>> _embeddingForText(String text, math.Random random) async {
-    // Real tokenizer + interpreter inputs are TODO. For now, generate a stable-ish
-    // embedding from text hash to make training deterministic per sample.
+  Future<List<double>> _embeddingForText(String text) async {
+    final fallbackDim = _embeddingDim > 0 ? _embeddingDim : _defaultEmbeddingDim;
+
+    // Stable fallback so local training continues if interpreter/tokenizer fails.
     final seed = text.codeUnits.fold<int>(0, (acc, c) => (acc * 31 + c) & 0x7fffffff);
     final seeded = math.Random(seed);
     final fallback = List<double>.generate(
-      _embeddingDim,
+      fallbackDim,
       (_) => (seeded.nextDouble() - 0.5) * 0.2,
     );
 
-    if (_interpreter == null) return fallback;
+    final interpreter = _interpreter;
+    if (interpreter == null) return fallback;
 
-    // Interpreter path is currently stubbed until tokenizer tensors are wired.
-    // Keeping fallback ensures loop is functional end-to-end.
-    return fallback;
+    try {
+      final encoding = TokenizerService.instance.encode(text, maxLength: 128);
+      final outputTensor = interpreter.getOutputTensor(0);
+      final outputShape = outputTensor.shape;
+      if (outputShape.isEmpty) {
+        return fallback;
+      }
+
+      final outputBuffer = _allocateOutputBuffer(outputShape);
+      final inputs = _buildTokenizerInputs(interpreter, encoding);
+
+      interpreter.runForMultipleInputs(inputs, {0: outputBuffer});
+
+      final embedding = _extractEmbedding(outputBuffer, outputShape, encoding.attentionMask);
+      if (embedding.isEmpty) {
+        return fallback;
+      }
+
+      return _normalizeVector(embedding);
+    } catch (e) {
+      if (kDebugMode) {
+        print('[FL] Tokenizer->TFLite embedding failed: $e');
+      }
+      return fallback;
+    }
+  }
+
+  List<Object> _buildTokenizerInputs(
+    Interpreter interpreter,
+    TokenizerEncoding encoding,
+  ) {
+    final ids = encoding.inputIds.toList(growable: false);
+    final mask = encoding.attentionMask.toList(growable: false);
+    final tokenTypes = List<int>.filled(ids.length, 0);
+    final inputTensors = interpreter.getInputTensors();
+
+    if (inputTensors.length == 2) {
+      return [
+        [mask],
+        [ids],
+      ];
+    }
+
+    if (inputTensors.isEmpty) {
+      return [
+        [ids],
+      ];
+    }
+
+    final inputs = <Object>[];
+    for (final tensor in inputTensors) {
+      final name = tensor.name.toLowerCase();
+      if (name.contains('mask')) {
+        inputs.add([mask]);
+      } else if (name.contains('token_type') || name.contains('segment')) {
+        inputs.add([tokenTypes]);
+      } else {
+        inputs.add([ids]);
+      }
+    }
+    return inputs;
+  }
+
+  Object _allocateOutputBuffer(List<int> shape) {
+    if (shape.length == 1) {
+      return List<double>.filled(shape[0], 0.0);
+    }
+
+    if (shape.length == 2) {
+      return List<List<double>>.generate(
+        shape[0],
+        (_) => List<double>.filled(shape[1], 0.0),
+        growable: false,
+      );
+    }
+
+    if (shape.length == 3) {
+      return List<List<List<double>>>.generate(
+        shape[0],
+        (_) => List<List<double>>.generate(
+          shape[1],
+          (_) => List<double>.filled(shape[2], 0.0),
+          growable: false,
+        ),
+        growable: false,
+      );
+    }
+
+    final flattened = shape.fold<int>(1, (acc, value) => acc * value);
+    return List<double>.filled(flattened, 0.0);
+  }
+
+  List<double> _extractEmbedding(
+    Object outputBuffer,
+    List<int> outputShape,
+    Int32List attentionMask,
+  ) {
+    if (outputShape.length == 3 && outputBuffer is List) {
+      final batch = outputBuffer.isNotEmpty ? outputBuffer.first : null;
+      if (batch is! List || batch.isEmpty) return const <double>[];
+
+      final tokenVectors = batch.whereType<List>().toList(growable: false);
+      if (tokenVectors.isEmpty) return const <double>[];
+
+      // Mean-pool only attended tokens for a stable sentence embedding.
+      final hiddenSize = tokenVectors.first.length;
+      final pooled = List<double>.filled(hiddenSize, 0.0);
+      int tokenCount = 0;
+      final usableLength = math.min(tokenVectors.length, attentionMask.length);
+
+      for (int i = 0; i < usableLength; i++) {
+        if (attentionMask[i] == 0) continue;
+        final token = tokenVectors[i];
+        for (int j = 0; j < hiddenSize && j < token.length; j++) {
+          pooled[j] += _asDouble(token[j]);
+        }
+        tokenCount += 1;
+      }
+
+      if (tokenCount == 0) {
+        return tokenVectors.first.map(_asDouble).toList(growable: false);
+      }
+
+      for (int j = 0; j < pooled.length; j++) {
+        pooled[j] /= tokenCount;
+      }
+      return pooled;
+    }
+
+    if (outputShape.length == 2 && outputBuffer is List && outputBuffer.isNotEmpty) {
+      final firstRow = outputBuffer.first;
+      if (firstRow is List) {
+        return firstRow.map(_asDouble).toList(growable: false);
+      }
+    }
+
+    if (outputShape.length == 1 && outputBuffer is List) {
+      return outputBuffer.map(_asDouble).toList(growable: false);
+    }
+
+    if (outputBuffer is List) {
+      return outputBuffer.map(_asDouble).toList(growable: false);
+    }
+
+    return const <double>[];
+  }
+
+  List<double> _normalizeVector(List<double> vector) {
+    if (vector.isEmpty) return vector;
+
+    final l2 = math.sqrt(vector.fold<double>(0.0, (sum, value) => sum + (value * value)));
+    if (l2 <= 1e-9) return vector;
+
+    return vector.map((value) => value / l2).toList(growable: false);
+  }
+
+  List<double> _resizeEmbedding(List<double> embedding, int size) {
+    if (embedding.length == size) return embedding;
+    if (size <= 0) return const <double>[];
+
+    final resized = List<double>.filled(size, 0.0);
+    final copyLength = math.min(size, embedding.length);
+    for (int i = 0; i < copyLength; i++) {
+      resized[i] = embedding[i];
+    }
+    return resized;
+  }
+
+  double _asDouble(Object? value) {
+    if (value is num) return value.toDouble();
+    return 0.0;
   }
 
   double _dot(List<double> a, List<double> b) {
@@ -374,12 +649,18 @@ class FederatedLearningService {
 
   /// Submit masked gradients to the FL coordinator
   Future<void> _submitMaskedGradient(List<double> maskedGradient) async {
+    if (maskedGradient.isEmpty) {
+      if (kDebugMode) {
+        print('[FL] Gradient submission skipped: empty gradient vector');
+      }
+      return;
+    }
+
     try {
       final deviceId = StorageService.instance.deviceId;
       final now = DateTime.now().toUtc();
 
-      // Get the current FL round (in a real implementation, query the server)
-      const int roundId = 0; // Placeholder
+      final roundId = await _resolveActiveRoundId();
 
       final response = await ApiEndpointService.instance.post(
         Uri.parse('${ApiEndpointService.instance.buildUri('/fl').toString()}/gradients/submit'),
@@ -411,6 +692,35 @@ class FederatedLearningService {
         print('[FL] Gradient submission error: $e');
       }
     }
+  }
+
+  Future<int> _resolveActiveRoundId() async {
+    try {
+      final deviceId = StorageService.instance.deviceId;
+      final response = await ApiEndpointService.instance.get(
+        ApiEndpointService.instance.buildUri(
+          '/fl/rounds/active',
+          queryParameters: {
+            'patient_device_id': deviceId,
+            'app_version': _localModelVersion,
+          },
+        ),
+      );
+
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        final roundId = body['round_id'] as int?;
+        if (roundId != null && roundId >= 0) {
+          return roundId;
+        }
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('[FL] Active round lookup failed, defaulting to round 0: $e');
+      }
+    }
+
+    return 0;
   }
 
   /// Check FL round status (for monitoring)

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../services/secure_link_service.dart';
 import '../services/storage_service.dart';
+import '../theme/anora_theme.dart';
 
 class UnstuckScreen extends StatefulWidget {
   const UnstuckScreen({
@@ -170,154 +171,171 @@ class _UnstuckScreenState extends State<UnstuckScreen> {
 
     return SafeArea(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 24, 20, 12),
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 12),
         child: SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Unstuck', style: theme.textTheme.headlineMedium),
-              const SizedBox(height: 6),
-              Text(
-                'Use a short reset, grounding, and one tiny next step.',
-                style: theme.textTheme.bodyMedium,
+              const AnoraStaggeredReveal(
+                order: 0,
+                child: AnoraScreenHeader(
+                  title: 'Unstuck',
+                  subtitle: 'A short reset sequence to regulate, ground, and choose one doable next step.',
+                ),
               ),
               const SizedBox(height: 16),
-              _Panel(
-                title: '60-second reset',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    LinearProgressIndicator(
-                      value: progress.clamp(0.0, 1.0),
-                      minHeight: 8,
-                      borderRadius: BorderRadius.circular(999),
-                      color: theme.colorScheme.primary,
-                      backgroundColor: const Color(0xFFE2DFD8),
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Text(
-                          _remainingSeconds == 0
-                              ? 'Complete'
-                              : '$_remainingSeconds s',
-                          style: theme.textTheme.titleLarge,
-                        ),
-                        const SizedBox(width: 10),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 6,
+              AnoraStaggeredReveal(
+                order: 1,
+                child: _Panel(
+                  title: '60-second reset',
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      LinearProgressIndicator(
+                        value: progress.clamp(0.0, 1.0),
+                        minHeight: 8,
+                        borderRadius: BorderRadius.circular(999),
+                        color: theme.colorScheme.primary,
+                        backgroundColor: AnoraPalette.border,
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Text(
+                            _remainingSeconds == 0
+                                ? 'Complete'
+                                : '$_remainingSeconds s',
+                            style: theme.textTheme.titleLarge,
                           ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFE8F1EC),
-                            borderRadius: BorderRadius.circular(999),
+                          const SizedBox(width: 10),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AnoraPalette.panelSoft,
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Text(_breathingInstruction()),
                           ),
-                          child: Text(_breathingInstruction()),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Wrap(
-                      spacing: 10,
-                      runSpacing: 10,
-                      children: [
-                        FilledButton.icon(
-                          onPressed: _toggleBreathing,
-                          icon: Icon(
-                            _isRunning
-                                ? Icons.pause_rounded
-                                : Icons.play_arrow_rounded,
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        children: [
+                          FilledButton.icon(
+                            onPressed: _toggleBreathing,
+                            icon: Icon(
+                              _isRunning
+                                  ? Icons.pause_rounded
+                                  : Icons.play_arrow_rounded,
+                            ),
+                            label: Text(_isRunning ? 'Pause' : 'Start'),
                           ),
-                          label: Text(_isRunning ? 'Pause' : 'Start'),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: _resetBreathing,
-                          icon: const Icon(Icons.replay_rounded),
-                          label: const Text('Reset'),
-                        ),
-                      ],
-                    ),
-                  ],
+                          OutlinedButton.icon(
+                            onPressed: _resetBreathing,
+                            icon: const Icon(Icons.replay_rounded),
+                            label: const Text('Reset'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
               const SizedBox(height: 14),
-              _Panel(
-                title: '5-4-3-2-1 grounding',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _groundingHeadline(),
-                      style: theme.textTheme.bodyLarge,
-                    ),
-                    const SizedBox(height: 10),
-                    ...List.generate(_groundingChecks.length, (index) {
-                      return CheckboxListTile(
-                        value: _groundingChecks[index],
-                        onChanged: (_) => _toggleGrounding(index),
-                        contentPadding: EdgeInsets.zero,
-                        controlAffinity: ListTileControlAffinity.leading,
-                        title: Text(_groundingPromptAt(index)),
-                      );
-                    }),
-                  ],
+              AnoraStaggeredReveal(
+                order: 2,
+                child: _Panel(
+                  title: '5-4-3-2-1 grounding',
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _groundingHeadline(),
+                        style: theme.textTheme.bodyLarge,
+                      ),
+                      const SizedBox(height: 10),
+                      ...List.generate(_groundingChecks.length, (index) {
+                        return CheckboxListTile(
+                          value: _groundingChecks[index],
+                          onChanged: (_) => _toggleGrounding(index),
+                          contentPadding: EdgeInsets.zero,
+                          controlAffinity: ListTileControlAffinity.leading,
+                          title: Text(_groundingPromptAt(index)),
+                        );
+                      }),
+                    ],
+                  ),
                 ),
               ),
               const SizedBox(height: 14),
-              _Panel(
-                title: 'Unblock prompt',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      activePrompt.title,
-                      style: theme.textTheme.titleLarge,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(activePrompt.body, style: theme.textTheme.bodyLarge),
-                    const SizedBox(height: 12),
-                    Wrap(
-                      spacing: 10,
-                      runSpacing: 10,
-                      children: [
-                        FilledButton.icon(
-                          onPressed: widget.onGoToJournal,
-                          icon: const Icon(Icons.edit_note_rounded),
-                          label: const Text('Write this in Journal'),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: _nextPrompt,
-                          icon: const Icon(Icons.shuffle_rounded),
-                          label: const Text('Another prompt'),
-                        ),
-                      ],
-                    ),
-                  ],
+              AnoraStaggeredReveal(
+                order: 3,
+                child: _Panel(
+                  title: 'Unblock prompt',
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        activePrompt.title,
+                        style: theme.textTheme.titleLarge,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(activePrompt.body, style: theme.textTheme.bodyLarge),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        children: [
+                          FilledButton.icon(
+                            onPressed: widget.onGoToJournal,
+                            icon: const Icon(Icons.edit_note_rounded),
+                            label: const Text('Write this in Journal'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _nextPrompt,
+                            icon: const Icon(Icons.shuffle_rounded),
+                            label: const Text('Another prompt'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
-                const SizedBox(height: 12),
-                Center(
+              const SizedBox(height: 12),
+              AnoraStaggeredReveal(
+                order: 4,
+                child: Center(
                   child: FilledButton.icon(
                     onPressed: _completeSession,
                     icon: const Icon(Icons.check_circle_rounded),
                     label: const Text('Mark session complete'),
                   ),
                 ),
+              ),
               const SizedBox(height: 14),
-              Card(
-                color: const Color(0xFFFFF3F0),
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
+              AnoraStaggeredReveal(
+                order: 5,
+                child: AnoraSectionCard(
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Icon(Icons.health_and_safety_rounded, color: Color(0xFFB8523A)),
+                      const Icon(
+                        Icons.health_and_safety_rounded,
+                        color: AnoraPalette.danger,
+                      ),
                       const SizedBox(width: 10),
                       Expanded(
                         child: Text(
                           'If you may hurt yourself or someone else, call local emergency services immediately.',
-                          style: theme.textTheme.bodyMedium,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: AnoraPalette.ink,
+                          ),
                         ),
                       ),
                     ],
@@ -363,13 +381,7 @@ class _Panel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF1F0EB),
-        borderRadius: BorderRadius.circular(18),
-      ),
+    return AnoraSectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

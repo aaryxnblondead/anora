@@ -11,6 +11,7 @@ import '../services/secure_link_service.dart';
 import '../services/storage_service.dart';
 import '../state/settings_controller.dart';
 import '../state/navigation_state.dart';
+import '../theme/anora_theme.dart';
 import '../widgets/feelings_wheel.dart';
 
 final _moodPathProvider = StateProvider<List<String>>((ref) => []);
@@ -349,7 +350,7 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
 
     return SafeArea(
       child: AnimatedPadding(
-        padding: EdgeInsets.fromLTRB(20, 24, 20, 12 + viewInsets.bottom),
+        padding: EdgeInsets.fromLTRB(18, 18, 18, 12 + viewInsets.bottom),
         duration: const Duration(milliseconds: 180),
         curve: Curves.easeOut,
         child: SingleChildScrollView(
@@ -358,24 +359,35 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              FeelingsWheel(
-                initialPath: moodPath,
-                onFeelingSelected: (path) {
-                  ref.read(_moodPathProvider.notifier).state = path;
-                  ref.read(_moodScoreProvider.notifier).state =
-                      FeelingsWheelData.moodScoreForPath(path);
-                  setState(() => _lastDominantEmotion = null);
-                  if (settings.hapticsEnabled) {
-                    HapticFeedback.selectionClick();
-                  }
-                },
+              const AnoraStaggeredReveal(
+                order: 0,
+                child: AnoraScreenHeader(
+                  title: 'Journal',
+                  subtitle: 'Name your feeling, write freely, and keep every word local and private.',
+                ),
+              ),
+              const SizedBox(height: 14),
+              AnoraStaggeredReveal(
+                order: 1,
+                child: FeelingsWheel(
+                  initialPath: moodPath,
+                  onFeelingSelected: (path) {
+                    ref.read(_moodPathProvider.notifier).state = path;
+                    ref.read(_moodScoreProvider.notifier).state =
+                        FeelingsWheelData.moodScoreForPath(path);
+                    setState(() => _lastDominantEmotion = null);
+                    if (settings.hapticsEnabled) {
+                      HapticFeedback.selectionClick();
+                    }
+                  },
+                ),
               ),
               const SizedBox(height: 10),
               if (!shouldPrompt)
                 Text(
                   'Tap a core feeling to continue',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: const Color(0xFFB0A898),
+                        color: AnoraPalette.muted,
                       ),
                 ),
               const SizedBox(height: 18),

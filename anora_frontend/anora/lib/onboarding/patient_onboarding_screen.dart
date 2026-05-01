@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/storage_service.dart';
+import '../theme/anora_theme.dart';
 
 class PatientOnboardingScreen extends StatefulWidget {
   const PatientOnboardingScreen({super.key});
@@ -22,8 +23,8 @@ class _PatientOnboardingScreenState extends State<PatientOnboardingScreen> {
 
   Future<void> _next() async {
     await _controller.nextPage(
-      duration: const Duration(milliseconds: 260),
-      curve: Curves.easeOutCubic,
+      duration: AnoraMotion.standard,
+      curve: AnoraMotion.standardCurve,
     );
   }
 
@@ -47,57 +48,70 @@ class _PatientOnboardingScreenState extends State<PatientOnboardingScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Scaffold(
-      backgroundColor: theme.colorScheme.surface,
-      body: SafeArea(
-        child: Column(
-          children: [
-            Expanded(
-              child: PageView(
-                controller: _controller,
-                onPageChanged: (value) => setState(() => _index = value),
-                children: [
-                  _OnboardingPage(
-                    icon: Icons.lock_rounded,
-                    title: 'Your journal stays on this device',
-                    body:
-                        'Anora is built for zero-knowledge privacy. Your journal text is never uploaded in plain form.',
-                    actionLabel: 'Next',
-                    onAction: _next,
+    final layout = AnoraLayoutSpec.of(context);
+    return AnoraBackdrop(
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: SafeArea(
+          child: Column(
+            children: [
+              Padding(
+                padding: layout.screenPadding(top: layout.topPadding, bottom: layout.minorGap),
+                child: const AnoraStaggeredReveal(
+                  order: 0,
+                  child: AnoraScreenHeader(
+                    title: 'Patient Onboarding',
+                    subtitle: 'Set up your private journaling space in under a minute.',
                   ),
-                  _OnboardingPage(
-                    icon: Icons.favorite_border_rounded,
-                    title: 'Your emotional companion',
-                    body:
-                        'Track your feelings with gentle check-ins, mood paths, and private insights that stay with you.',
-                    actionLabel: _saving ? 'Finishing...' : 'Get Started',
-                    onAction: _saving ? null : _finish,
-                  ),
-                ],
+                ),
               ),
-            ),
-            Padding(
-              padding: const EdgeInsets.only(bottom: 16),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: List.generate(
-                  2,
-                  (dot) => AnimatedContainer(
-                    duration: const Duration(milliseconds: 180),
-                    width: _index == dot ? 18 : 8,
-                    height: 8,
-                    margin: const EdgeInsets.symmetric(horizontal: 4),
-                    decoration: BoxDecoration(
-                      color: _index == dot
-                          ? theme.colorScheme.primary
-                          : const Color(0xFFE0DED7),
-                      borderRadius: BorderRadius.circular(999),
+              Expanded(
+                child: PageView(
+                  controller: _controller,
+                  onPageChanged: (value) => setState(() => _index = value),
+                  children: [
+                    _OnboardingPage(
+                      icon: Icons.lock_rounded,
+                      title: 'Your journal stays on this device',
+                      body:
+                          'Anora is built for zero-knowledge privacy. Your journal text is never uploaded in plain form.',
+                      actionLabel: 'Next',
+                      onAction: _next,
+                    ),
+                    _OnboardingPage(
+                      icon: Icons.favorite_border_rounded,
+                      title: 'Your emotional companion',
+                      body:
+                          'Track your feelings with gentle check-ins, mood paths, and private insights that stay with you.',
+                      actionLabel: _saving ? 'Finishing...' : 'Get Started',
+                      onAction: _saving ? null : _finish,
+                    ),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: EdgeInsets.only(bottom: layout.bottomPadding - 2),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: List.generate(
+                    2,
+                    (dot) => AnimatedContainer(
+                      duration: const Duration(milliseconds: 180),
+                      width: _index == dot ? 18 : 8,
+                      height: 8,
+                      margin: const EdgeInsets.symmetric(horizontal: 4),
+                      decoration: BoxDecoration(
+                        color: _index == dot
+                            ? theme.colorScheme.primary
+                            : AnoraPalette.border,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -122,38 +136,56 @@ class _OnboardingPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final layout = AnoraLayoutSpec.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
+      padding: layout.screenPadding(top: layout.minorGap, bottom: layout.bottomPadding - 2),
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisAlignment: MainAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF1F0EB),
-              shape: BoxShape.circle,
-              border: Border.all(color: const Color(0xFFE0DED7)),
+          Expanded(
+            child: AnoraStaggeredReveal(
+              order: 1,
+              child: AnoraSectionCard(
+                emphasis: true,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Container(
+                      width: layout.isCompact ? 78 : 88,
+                      height: layout.isCompact ? 78 : 88,
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.primary.withValues(alpha: 0.12),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(icon, size: layout.isCompact ? 36 : 42, color: theme.colorScheme.primary),
+                    ),
+                    SizedBox(height: layout.sectionGap),
+                    Text(
+                      title,
+                      style: theme.textTheme.headlineMedium,
+                      textAlign: TextAlign.center,
+                    ),
+                    SizedBox(height: layout.minorGap),
+                    Text(
+                      body,
+                      style: theme.textTheme.bodyLarge,
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
             ),
-            child: Icon(icon, size: 44, color: theme.colorScheme.primary),
           ),
-          const SizedBox(height: 18),
-          Text(
-            title,
-            style: theme.textTheme.headlineMedium,
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 10),
-          Text(
-            body,
-            style: theme.textTheme.bodyLarge,
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 24),
+          SizedBox(height: layout.sectionGap),
           SizedBox(
             width: double.infinity,
             child: FilledButton(
               onPressed: onAction,
-              child: Text(actionLabel),
+              child: AnimatedSwitcher(
+                duration: AnoraMotion.quick,
+                switchInCurve: AnoraMotion.standardCurve,
+                child: Text(actionLabel, key: ValueKey<String>(actionLabel)),
+              ),
             ),
           ),
         ],

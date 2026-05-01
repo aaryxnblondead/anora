@@ -1,6 +1,8 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'clinician/clinician_web_portal.dart';
 import 'screens/home_screen.dart';
 import 'screens/insights_screen.dart';
 import 'screens/journal_screen.dart';
@@ -11,6 +13,7 @@ import 'services/ai_inference_service.dart';
 import 'services/storage_service.dart';
 import 'services/tokenizer_service.dart';
 import 'state/navigation_state.dart';
+import 'theme/anora_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -55,68 +58,31 @@ class AnoraApp extends StatelessWidget {
     return MaterialApp(
       title: 'Anora',
       debugShowCheckedModeBanner: false,
-      theme: _buildSoothingTheme(),
-      home: const OnboardingGate(),
+      theme: buildAnoraTheme(),
+      home: _isClinicianWebPortalMode()
+          ? const ClinicianWebPortalGate()
+          : const OnboardingGate(),
     );
   }
 }
 
-ThemeData _buildSoothingTheme() {
-  const colorScheme = ColorScheme(
-    brightness: Brightness.light,
-    primary: Color(0xFF4D6B5B),
-    onPrimary: Color(0xFFF7F6F2),
-    secondary: Color(0xFF5B6F8F),
-    onSecondary: Color(0xFFF7F6F2),
-    error: Color(0xFFE38B7C),
-    onError: Color(0xFFF7F6F2),
-    surface: Color(0xFFF7F6F2),
-    onSurface: Color(0xFF1F2A24),
-  );
+bool _isClinicianWebPortalMode() {
+  if (!kIsWeb) return false;
 
-  return ThemeData(
-    useMaterial3: true,
-    colorScheme: colorScheme,
-    scaffoldBackgroundColor: colorScheme.surface,
-    fontFamily: 'Poppins',
-    textTheme: const TextTheme(
-      headlineLarge: TextStyle(fontSize: 28, fontWeight: FontWeight.w600),
-      headlineMedium: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
-      titleLarge: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-      bodyLarge: TextStyle(fontSize: 16, height: 1.6),
-      bodyMedium: TextStyle(fontSize: 14, height: 1.6),
-      labelLarge: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-    ),
-    inputDecorationTheme: InputDecorationTheme(
-      filled: true,
-      fillColor: const Color(0xFFF1F0EB),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(14),
-        borderSide: BorderSide.none,
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(14),
-        borderSide: const BorderSide(color: Color(0xFF4D6B5B), width: 1.2),
-      ),
-      hintStyle: const TextStyle(color: Color(0xFF6E7A73)),
-    ),
-    appBarTheme: const AppBarTheme(
-      elevation: 0,
-      centerTitle: true,
-      backgroundColor: Color(0xFFF7F6F2),
-      foregroundColor: Color(0xFF1F2A24),
-      titleTextStyle: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-    ),
-    bottomNavigationBarTheme: const BottomNavigationBarThemeData(
-      backgroundColor: Color(0xFFF7F6F2),
-      selectedItemColor: Color(0xFF4D6B5B),
-      unselectedItemColor: Color(0xFF87958B),
-      showUnselectedLabels: true,
-      type: BottomNavigationBarType.fixed,
-    ),
-    dividerColor: const Color(0xFFE0DED7),
-  );
+  final uri = Uri.base;
+  final portal = uri.queryParameters['portal']?.toLowerCase();
+  if (portal == 'clinician' || portal == 'clinician-web') {
+    return true;
+  }
+
+  final path = uri.path.toLowerCase();
+  if (path.contains('clinician-portal') || path.endsWith('/clinician')) {
+    return true;
+  }
+
+  final fragment = uri.fragment.toLowerCase();
+  return fragment.contains('portal=clinician') ||
+      fragment.contains('clinician-portal');
 }
 
 class AppShell extends ConsumerStatefulWidget {
@@ -131,11 +97,31 @@ class _AppShellState extends ConsumerState<AppShell> {
   late final PageController _pageController;
 
   final List<_NavTab> _tabs = const [
-    _NavTab(label: 'Home', icon: Icons.home_rounded),
-    _NavTab(label: 'Unstuck', icon: Icons.self_improvement_rounded),
-    _NavTab(label: 'Journal', icon: Icons.edit_note_rounded),
-    _NavTab(label: 'Insights', icon: Icons.insights_rounded),
-    _NavTab(label: 'Settings', icon: Icons.settings_rounded),
+    _NavTab(
+      label: 'Home',
+      icon: Icons.home_outlined,
+      selectedIcon: Icons.home_rounded,
+    ),
+    _NavTab(
+      label: 'Unstuck',
+      icon: Icons.self_improvement_outlined,
+      selectedIcon: Icons.self_improvement_rounded,
+    ),
+    _NavTab(
+      label: 'Journal',
+      icon: Icons.edit_note_outlined,
+      selectedIcon: Icons.edit_note_rounded,
+    ),
+    _NavTab(
+      label: 'Insights',
+      icon: Icons.insights_outlined,
+      selectedIcon: Icons.insights_rounded,
+    ),
+    _NavTab(
+      label: 'Settings',
+      icon: Icons.settings_outlined,
+      selectedIcon: Icons.settings_rounded,
+    ),
   ];
 
   @override
@@ -160,35 +146,65 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: PageView(
-          controller: _pageController,
-          physics: const NeverScrollableScrollPhysics(),
-          onPageChanged: (index) => setState(() => _currentIndex = index),
-          children: [
-            HomeScreen(
-              onGoToJournal: () => _jumpTo(2),
-              onGoToUnstuck: () => _jumpTo(1),
-            ),
-            UnstuckScreen(onGoToJournal: () => _jumpTo(2)),
-            const JournalScreen(),
-            const InsightsScreen(),
-            const SettingsScreen(),
-          ],
-        ),
-      ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        onTap: (index) => _jumpTo(index),
-        items: _tabs
-            .map(
-              (tab) => BottomNavigationBarItem(
-                icon: Icon(tab.icon),
-                label: tab.label,
+    final layout = AnoraLayoutSpec.of(context);
+
+    return AnoraBackdrop(
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: SafeArea(
+          bottom: false,
+          child: PageView(
+            controller: _pageController,
+            physics: const NeverScrollableScrollPhysics(),
+            onPageChanged: (index) => setState(() => _currentIndex = index),
+            children: [
+              HomeScreen(
+                onGoToJournal: () => _jumpTo(2),
+                onGoToUnstuck: () => _jumpTo(1),
               ),
-            )
-            .toList(),
+              UnstuckScreen(onGoToJournal: () => _jumpTo(2)),
+              const JournalScreen(),
+              const InsightsScreen(),
+              const SettingsScreen(),
+            ],
+          ),
+        ),
+        bottomNavigationBar: SafeArea(
+          minimum: EdgeInsets.fromLTRB(
+            layout.isCompact ? 10 : 12,
+            0,
+            layout.isCompact ? 10 : 12,
+            layout.isCompact ? 8 : 10,
+          ),
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x1A163556),
+                  blurRadius: 20,
+                  offset: Offset(0, 8),
+                ),
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(24),
+              child: NavigationBar(
+                selectedIndex: _currentIndex,
+                onDestinationSelected: (index) => _jumpTo(index),
+                destinations: _tabs
+                    .map(
+                      (tab) => NavigationDestination(
+                        icon: Icon(tab.icon),
+                        selectedIcon: Icon(tab.selectedIcon),
+                        label: tab.label,
+                      ),
+                    )
+                    .toList(),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -198,15 +214,20 @@ class _AppShellState extends ConsumerState<AppShell> {
     setState(() => _currentIndex = index);
     _pageController.animateToPage(
       index,
-      duration: const Duration(milliseconds: 260),
-      curve: Curves.easeOutCubic,
+      duration: AnoraMotion.standard,
+      curve: AnoraMotion.standardCurve,
     );
   }
 }
 
 class _NavTab {
-  const _NavTab({required this.label, required this.icon});
+  const _NavTab({
+    required this.label,
+    required this.icon,
+    required this.selectedIcon,
+  });
 
   final String label;
   final IconData icon;
+  final IconData selectedIcon;
 }

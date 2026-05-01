@@ -27,6 +27,9 @@ from fl_coordinator import (
     submit_masked_gradient,
     get_latest_model,
     get_fl_round_status,
+    get_active_fl_round,
+    list_active_fl_rounds,
+    assign_client_to_fl_round,
     create_fl_round,
     aggregate_masked_gradients,
     get_convergence_metrics,
@@ -1491,6 +1494,54 @@ def submit_fl_gradient(payload: MaskedGradientUpload) -> dict[str, Any]:
     )
     
     return result
+
+
+@app.get("/fl/rounds/active")
+def get_active_fl_round_endpoint(
+    patient_device_id: str | None = None,
+    app_version: str | None = None,
+) -> dict[str, Any]:
+    """
+    Get the currently active FL round.
+
+    Clients should query this endpoint before submitting gradients so
+    the coordinator can rotate rounds without requiring app updates.
+    When patient_device_id is provided, coordinator uses sharding policy
+    to return client-specific assignment across multiple active rounds.
+    """
+    with get_connection() as connection:
+        if patient_device_id:
+            status = assign_client_to_fl_round(
+                connection,
+                patient_device_id=patient_device_id,
+                app_version=app_version,
+            )
+        else:
+            status = get_active_fl_round(connection)
+
+    if status is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No active federated learning round",
+        )
+
+    return status
+
+
+@app.get("/fl/rounds/active/list")
+def list_active_fl_rounds_endpoint() -> dict[str, Any]:
+    """
+    List all active FL rounds.
+
+    Useful for observability and validating coordinator sharding state.
+    """
+    with get_connection() as connection:
+        rounds = list_active_fl_rounds(connection)
+
+    return {
+        "rounds": rounds,
+        "count": len(rounds),
+    }
 
 
 @app.get("/fl/rounds/{round_id}")

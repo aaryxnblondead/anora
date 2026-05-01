@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/journal_entry.dart';
 import '../services/api_endpoint_service.dart';
 import '../services/storage_service.dart';
+import '../theme/anora_theme.dart';
 import '../widgets/journal_mascot.dart';
 
 final _homeEntriesProvider = StreamProvider<List<JournalEntry>>((ref) {
@@ -148,7 +149,7 @@ class HomeScreen extends ConsumerWidget {
 
     return SafeArea(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 24, 20, 12),
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 12),
         child: entriesAsync.when(
           data: (entries) => _HomeContent(
             entries: entries,
@@ -199,88 +200,110 @@ class _HomeContent extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Home', style: Theme.of(context).textTheme.headlineMedium),
-          const SizedBox(height: 6),
-          Text(
-            'A gentle snapshot of your recent mood.',
-            style: Theme.of(context).textTheme.bodyMedium,
+          const AnoraStaggeredReveal(
+            order: 0,
+            child: AnoraScreenHeader(
+              title: 'Home',
+              subtitle: 'A curated snapshot of your emotional momentum this week.',
+            ),
           ),
           const SizedBox(height: 16),
-          _MascotPanel(mood: mascotMood),
-          const SizedBox(height: 16),
-          _MoodSummaryCard(
-            summary: summary,
-            recentMood: recentMood,
-            sparklinePoints: sparklinePoints,
+          AnoraStaggeredReveal(
+            order: 1,
+            child: _MascotPanel(mood: mascotMood),
           ),
           const SizedBox(height: 16),
-          _QuoteCard(
-            quote: quote,
-            isLoading: !quoteState.isLoaded,
-            onNextQuote: onNextQuote,
-            onToggleFavorite: onToggleFavorite,
+          AnoraStaggeredReveal(
+            order: 2,
+            child: _MoodSummaryCard(
+              summary: summary,
+              recentMood: recentMood,
+              sparklinePoints: sparklinePoints,
+            ),
+          ),
+          const SizedBox(height: 16),
+          AnoraStaggeredReveal(
+            order: 3,
+            child: _QuoteCard(
+              quote: quote,
+              isLoading: !quoteState.isLoaded,
+              onNextQuote: onNextQuote,
+              onToggleFavorite: onToggleFavorite,
+            ),
           ),
           const SizedBox(height: 24),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: onGoToJournal,
-              icon: const Icon(Icons.edit_note_rounded),
-              label: const Text('Go to Journal'),
+          AnoraStaggeredReveal(
+            order: 4,
+            child: SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: onGoToJournal,
+                icon: const Icon(Icons.edit_note_rounded),
+                label: const Text('Go to Journal'),
+              ),
             ),
           ),
           const SizedBox(height: 10),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: onGoToUnstuck,
-              icon: const Icon(Icons.self_improvement_rounded),
-              label: const Text('I feel stuck right now'),
+          AnoraStaggeredReveal(
+            order: 5,
+            child: SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: onGoToUnstuck,
+                icon: const Icon(Icons.self_improvement_rounded),
+                label: const Text('I feel stuck right now'),
+              ),
             ),
           ),
           const SizedBox(height: 10),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text(
-                      'If you are in immediate danger, please call your local emergency number.',
-                    ),
-                  ),
-                );
-              },
-              icon: const Icon(Icons.emergency_rounded),
-              label: const Text('I need immediate help / emergency'),
-            ),
-          ),
-          const SizedBox(height: 10),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: () async {
-                try {
-                  await ApiEndpointService.instance.ping();
-                  if (!context.mounted) return;
+          AnoraStaggeredReveal(
+            order: 6,
+            child: SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Backend reachable at ${ApiEndpointService.instance.baseUrl}.'),
-                    ),
-                  );
-                } catch (error) {
-                  if (!context.mounted) return;
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
+                    const SnackBar(
                       content: Text(
-                        'Could not reach ${ApiEndpointService.instance.baseUrl}: $error',
+                        'If you are in immediate danger, please call your local emergency number.',
                       ),
                     ),
                   );
-                }
-              },
-              icon: const Icon(Icons.cloud_sync_rounded),
-              label: const Text('Send a ping'),
+                },
+                icon: const Icon(Icons.emergency_rounded),
+                label: const Text('I need immediate help / emergency'),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          AnoraStaggeredReveal(
+            order: 7,
+            child: SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  try {
+                    await ApiEndpointService.instance.ping();
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Backend reachable at ${ApiEndpointService.instance.baseUrl}.'),
+                      ),
+                    );
+                  } catch (error) {
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          'Could not reach ${ApiEndpointService.instance.baseUrl}: $error',
+                        ),
+                      ),
+                    );
+                  }
+                },
+                icon: const Icon(Icons.cloud_sync_rounded),
+                label: const Text('Send a ping'),
+              ),
             ),
           ),
         ],
@@ -414,15 +437,11 @@ class _MoodSummaryCard extends StatelessWidget {
     final theme = Theme.of(context);
     final accent = theme.colorScheme.primary;
     final moodText = recentMood.isNotEmpty
-      ? recentMood.join(' - ')
-      : 'No mood selected yet';
+        ? recentMood.join(' - ')
+        : 'No mood selected yet';
 
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF1F0EB),
-        borderRadius: BorderRadius.circular(18),
-      ),
+    return AnoraSectionCard(
+      emphasis: true,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -461,7 +480,7 @@ class _MoodSummaryCard extends StatelessWidget {
           Text(
             'Most recent mood',
             style: theme.textTheme.labelLarge?.copyWith(
-              color: const Color(0xFF6E7A73),
+              color: AnoraPalette.muted,
             ),
           ),
           const SizedBox(height: 4),
@@ -486,9 +505,9 @@ class _StatPill extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AnoraPalette.panelSoft,
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: const Color(0xFFE0DED7)),
+        border: Border.all(color: AnoraPalette.border),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -496,7 +515,7 @@ class _StatPill extends StatelessWidget {
           Text(
             label,
             style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: const Color(0xFF6E7A73),
+              color: AnoraPalette.muted,
             ),
           ),
           const SizedBox(width: 6),
@@ -527,20 +546,7 @@ class _QuoteCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xFFE0DED7)),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x0A000000),
-            blurRadius: 12,
-            offset: Offset(0, 6),
-          ),
-        ],
-      ),
+    return AnoraSectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -576,7 +582,7 @@ class _QuoteCard extends StatelessWidget {
               Text(
                 quote != null ? '- ${quote!.author}' : '',
                 style: theme.textTheme.bodySmall?.copyWith(
-                  color: const Color(0xFF6E7A73),
+                  color: AnoraPalette.muted,
                 ),
               ),
               TextButton(
@@ -608,14 +614,8 @@ class _MascotPanelState extends State<_MascotPanel> {
     final mood = _overrideMood ?? widget.mood;
     final cfg = kMoodConfigs[mood] ?? kMoodConfigs[MascotMood.idle]!;
 
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xFFE0DED7)),
-      ),
+    return AnoraSectionCard(
+      emphasis: true,
       child: Column(
         children: [
           MascotSpeechBubble(
@@ -656,7 +656,7 @@ class _SparklineChart extends StatelessWidget {
       child: CustomPaint(
         painter: _SparklinePainter(
           points: hasPoints ? points : List.filled(7, 0.5),
-          color: hasPoints ? color : const Color(0xFFB8B1A7),
+          color: hasPoints ? color : AnoraPalette.muted.withValues(alpha: 0.45),
         ),
       ),
     );
@@ -709,26 +709,20 @@ class _EmptyStateIllustration extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return Container(
-      width: double.infinity,
+    return AnoraSectionCard(
       padding: const EdgeInsets.symmetric(vertical: 18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE0DED7)),
-      ),
       child: Column(
         children: [
           Container(
             width: 56,
             height: 56,
             decoration: const BoxDecoration(
-              color: Color(0xFFF1F0EB),
+              color: AnoraPalette.panelSoft,
               shape: BoxShape.circle,
             ),
             child: const Icon(
               Icons.self_improvement_rounded,
-              color: Color(0xFF87958B),
+              color: AnoraPalette.secondary,
               size: 28,
             ),
           ),
@@ -743,7 +737,7 @@ class _EmptyStateIllustration extends StatelessWidget {
           Text(
             'Your first entry will light up this space.',
             style: theme.textTheme.bodySmall?.copyWith(
-              color: const Color(0xFF6E7A73),
+              color: AnoraPalette.muted,
             ),
           ),
         ],
