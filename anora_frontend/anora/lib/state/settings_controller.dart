@@ -6,6 +6,8 @@ const _biometricKey = 'setting_biometric';
 const _autoLockKey = 'setting_autolock';
 const _remindersKey = 'setting_reminders';
 const _hapticsKey = 'setting_haptics';
+const _clinicianOptInKey = 'setting_clinician_opt_in';
+const _autoUnstuckKey = 'setting_auto_unstuck';
 
 final settingsControllerProvider =
     StateNotifierProvider<SettingsController, AppSettings>(
@@ -26,6 +28,8 @@ class SettingsController extends StateNotifier<AppSettings> {
       autoLockEnabled: _storage.readBoolSetting(_autoLockKey, fallback: true),
       remindersEnabled: _storage.readBoolSetting(_remindersKey, fallback: true),
       hapticsEnabled: _storage.readBoolSetting(_hapticsKey, fallback: true),
+      clinicianOptIn: _storage.readBoolSetting(_clinicianOptInKey, fallback: false),
+      autoUnstuckEnabled: _storage.readBoolSetting(_autoUnstuckKey, fallback: false),
     );
   }
 
@@ -48,6 +52,16 @@ class SettingsController extends StateNotifier<AppSettings> {
     state = state.copyWith(hapticsEnabled: value);
     await _storage.writeBoolSetting(_hapticsKey, value);
   }
+
+  Future<void> setClinicianOptIn(bool value) async {
+    state = state.copyWith(clinicianOptIn: value);
+    await _storage.writeBoolSetting(_clinicianOptInKey, value);
+  }
+
+  Future<void> setAutoUnstuck(bool value) async {
+    state = state.copyWith(autoUnstuckEnabled: value);
+    await _storage.writeBoolSetting(_autoUnstuckKey, value);
+  }
 }
 
 class AppSettings {
@@ -56,6 +70,8 @@ class AppSettings {
     required this.autoLockEnabled,
     required this.remindersEnabled,
     required this.hapticsEnabled,
+    required this.clinicianOptIn,
+    required this.autoUnstuckEnabled,
   });
 
   factory AppSettings.initial() {
@@ -64,6 +80,8 @@ class AppSettings {
       autoLockEnabled: true,
       remindersEnabled: true,
       hapticsEnabled: true,
+      clinicianOptIn: false,
+      autoUnstuckEnabled: false,
     );
   }
 
@@ -71,18 +89,24 @@ class AppSettings {
   final bool autoLockEnabled;
   final bool remindersEnabled;
   final bool hapticsEnabled;
+  final bool clinicianOptIn;
+  final bool autoUnstuckEnabled;
 
   AppSettings copyWith({
     bool? biometricsEnabled,
     bool? autoLockEnabled,
     bool? remindersEnabled,
     bool? hapticsEnabled,
+    bool? clinicianOptIn,
+    bool? autoUnstuckEnabled,
   }) {
     return AppSettings(
       biometricsEnabled: biometricsEnabled ?? this.biometricsEnabled,
       autoLockEnabled: autoLockEnabled ?? this.autoLockEnabled,
       remindersEnabled: remindersEnabled ?? this.remindersEnabled,
       hapticsEnabled: hapticsEnabled ?? this.hapticsEnabled,
+      clinicianOptIn: clinicianOptIn ?? this.clinicianOptIn,
+      autoUnstuckEnabled: autoUnstuckEnabled ?? this.autoUnstuckEnabled,
     );
   }
 }

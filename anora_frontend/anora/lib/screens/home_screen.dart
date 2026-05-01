@@ -131,9 +131,14 @@ class _QuoteRecord {
 }
 
 class HomeScreen extends ConsumerWidget {
-  const HomeScreen({super.key, required this.onGoToJournal});
+  const HomeScreen({
+    super.key,
+    required this.onGoToJournal,
+    required this.onGoToUnstuck,
+  });
 
   final VoidCallback onGoToJournal;
+  final VoidCallback onGoToUnstuck;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -148,6 +153,7 @@ class HomeScreen extends ConsumerWidget {
           data: (entries) => _HomeContent(
             entries: entries,
             onGoToJournal: onGoToJournal,
+            onGoToUnstuck: onGoToUnstuck,
             quoteState: quoteState,
             onNextQuote: quoteController.nextQuote,
             onToggleFavorite: quoteController.toggleFavorite,
@@ -166,6 +172,7 @@ class _HomeContent extends StatelessWidget {
   const _HomeContent({
     required this.entries,
     required this.onGoToJournal,
+    required this.onGoToUnstuck,
     required this.quoteState,
     required this.onNextQuote,
     required this.onToggleFavorite,
@@ -173,6 +180,7 @@ class _HomeContent extends StatelessWidget {
 
   final List<JournalEntry> entries;
   final VoidCallback onGoToJournal;
+  final VoidCallback onGoToUnstuck;
   final _QuoteState quoteState;
   final VoidCallback onNextQuote;
   final ValueChanged<String> onToggleFavorite;
@@ -219,6 +227,15 @@ class _HomeContent extends StatelessWidget {
               onPressed: onGoToJournal,
               icon: const Icon(Icons.edit_note_rounded),
               label: const Text('Go to Journal'),
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: onGoToUnstuck,
+              icon: const Icon(Icons.self_improvement_rounded),
+              label: const Text('I feel stuck right now'),
             ),
           ),
           const SizedBox(height: 10),

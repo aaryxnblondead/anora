@@ -293,6 +293,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   MaterialPageRoute(builder: (_) => const ShareReportScreen()),
                 ),
               ),
+              const Divider(),
+              _SettingRow(
+                title: 'Allow clinician signals',
+                subtitle: 'Opt in to send brief alerts to your clinician when repeated high-distress sessions occur.',
+                trailing: Switch.adaptive(
+                  value: settings.clinicianOptIn,
+                  onChanged: (value) async {
+                    await controller.setClinicianOptIn(value);
+                    if (settings.hapticsEnabled && value) {
+                      HapticFeedback.selectionClick();
+                    }
+                  },
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 16),
@@ -307,6 +321,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   onChanged: (value) async {
                     await controller.setReminders(value);
                     if (settings.hapticsEnabled) {
+                      HapticFeedback.selectionClick();
+                    }
+                  },
+                ),
+              ),
+              const Divider(),
+              _SettingRow(
+                title: 'Start Unstuck automatically',
+                subtitle: 'When enabled, a short Unstuck flow opens after a moderate-risk journal entry.',
+                trailing: Switch.adaptive(
+                  value: settings.autoUnstuckEnabled,
+                  onChanged: (value) async {
+                    await controller.setAutoUnstuck(value);
+                    if (settings.hapticsEnabled && value) {
                       HapticFeedback.selectionClick();
                     }
                   },

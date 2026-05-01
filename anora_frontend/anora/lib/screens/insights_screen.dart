@@ -67,6 +67,8 @@ class _InsightsContent extends StatelessWidget {
         const SizedBox(height: 20),
         _MoodTrendCard(points: trendPoints),
         const SizedBox(height: 20),
+        _UnstuckStatsCard(),
+        const SizedBox(height: 20),
         Text('Recent entries', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 12),
         Expanded(
@@ -354,6 +356,77 @@ class _MoodPoint {
   final String dayLabel;
   final double moodScore;
   final bool hasData;
+}
+
+class _UnstuckStatsCard extends StatelessWidget {
+  const _UnstuckStatsCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final sessions = StorageService.instance.readUnstuckSessions();
+    final now = DateTime.now();
+    final cutoff = now.subtract(const Duration(days: 30));
+    final recent = sessions.where((s) {
+      try {
+        final ts = DateTime.parse(s['timestamp'] as String);
+        return ts.isAfter(cutoff);
+      } catch (_) {
+        return false;
+      }
+    }).toList(growable: false);
+
+    final total = recent.length;
+    final completedGrounding = recent.where((s) => s['grounding_completed'] == true).length;
+    final avgDuration = total == 0
+        ? 0
+        : (recent.map((s) => (s['duration_seconds'] as num?)?.toDouble() ?? 0).reduce((a, b) => a + b) / total);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF1F0EB),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Unstuck sessions', style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 8),
+          Text('Last 30 days', style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('$total', style: Theme.of(context).textTheme.headlineSmall),
+                  const SizedBox(height: 4),
+                  Text('Sessions', style: Theme.of(context).textTheme.bodyMedium),
+                ],
+              ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('${((completedGrounding / (total == 0 ? 1 : total)) * 100).round()}%', style: Theme.of(context).textTheme.headlineSmall),
+                  const SizedBox(height: 4),
+                  Text('Grounding rate', style: Theme.of(context).textTheme.bodyMedium),
+                ],
+              ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('${avgDuration.round()}s', style: Theme.of(context).textTheme.headlineSmall),
+                  const SizedBox(height: 4),
+                  Text('Avg duration', style: Theme.of(context).textTheme.bodyMedium),
+                ],
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _EmptyStateCard extends StatelessWidget {

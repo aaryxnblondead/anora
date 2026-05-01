@@ -18,6 +18,7 @@ class StorageService {
   static const String _secureKeyName = 'anora_encryption_key';
   static const String _quotesKey = 'home_quotes';
   static const String _quoteIndexKey = 'home_quote_index';
+  static const String _unstuckSessionsKey = 'unstuck_sessions';
 
   static const List<Map<String, dynamic>> _defaultQuotes = [
     {
@@ -170,6 +171,28 @@ class StorageService {
     await _secureStorage.delete(key: _secureKeyName);
 
     await init();
+  }
+
+  /// Persist an Unstuck session summary. Stored as a list of maps under
+  /// the `_unstuckSessionsKey` in the settings box.
+  Future<void> addUnstuckSession(Map<String, dynamic> session) async {
+    final raw = settingsBox.get(_unstuckSessionsKey);
+    final List<dynamic> sessions = raw is List ? List<dynamic>.from(raw) : <dynamic>[];
+    sessions.add(session);
+    await settingsBox.put(_unstuckSessionsKey, sessions);
+  }
+
+  /// Read stored Unstuck sessions (may be empty).
+  List<Map<String, dynamic>> readUnstuckSessions() {
+    final raw = settingsBox.get(_unstuckSessionsKey);
+    if (raw is List) {
+      try {
+        return raw.map((e) => Map<String, dynamic>.from(e as Map)).toList(growable: false);
+      } catch (_) {
+        return <Map<String, dynamic>>[];
+      }
+    }
+    return <Map<String, dynamic>>[];
   }
 
   Future<Uint8List> _getOrCreateEncryptionKey() async {

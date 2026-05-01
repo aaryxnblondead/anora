@@ -10,6 +10,7 @@ import '../services/ai_inference_service.dart';
 import '../services/secure_link_service.dart';
 import '../services/storage_service.dart';
 import '../state/settings_controller.dart';
+import '../state/navigation_state.dart';
 import '../widgets/feelings_wheel.dart';
 
 final _moodPathProvider = StateProvider<List<String>>((ref) => []);
@@ -236,6 +237,16 @@ class _JournalScreenState extends ConsumerState<JournalScreen> {
         riskFlags: aiResult.riskFlags,
         sentimentScore: aiResult.sentimentScore,
       );
+
+      // If user enabled automatic Unstuck launches and this entry indicates
+      // moderate distress (not critical), open the Unstuck flow.
+      try {
+        final settings = ref.read(settingsControllerProvider);
+        final isModerate = blendedMoodScore < 0.45 && blendedMoodScore >= 0.2;
+        if (settings.autoUnstuckEnabled && isModerate) {
+          ref.read(navRequestProvider.notifier).state = 1; // Unstuck tab index
+        }
+      } catch (_) {}
 
       if (settings.hapticsEnabled) {
         await HapticFeedback.mediumImpact();

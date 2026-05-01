@@ -5,10 +5,12 @@ import 'screens/home_screen.dart';
 import 'screens/insights_screen.dart';
 import 'screens/journal_screen.dart';
 import 'screens/settings_screen.dart';
+import 'screens/unstuck_screen.dart';
 import 'onboarding/onboarding_gate.dart';
 import 'services/ai_inference_service.dart';
 import 'services/storage_service.dart';
 import 'services/tokenizer_service.dart';
+import 'state/navigation_state.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -117,19 +119,20 @@ ThemeData _buildSoothingTheme() {
   );
 }
 
-class AppShell extends StatefulWidget {
+class AppShell extends ConsumerStatefulWidget {
   const AppShell({super.key});
 
   @override
-  State<AppShell> createState() => _AppShellState();
+  ConsumerState<AppShell> createState() => _AppShellState();
 }
 
-class _AppShellState extends State<AppShell> {
+class _AppShellState extends ConsumerState<AppShell> {
   int _currentIndex = 0;
   late final PageController _pageController;
 
   final List<_NavTab> _tabs = const [
     _NavTab(label: 'Home', icon: Icons.home_rounded),
+    _NavTab(label: 'Unstuck', icon: Icons.self_improvement_rounded),
     _NavTab(label: 'Journal', icon: Icons.edit_note_rounded),
     _NavTab(label: 'Insights', icon: Icons.insights_rounded),
     _NavTab(label: 'Settings', icon: Icons.settings_rounded),
@@ -139,6 +142,14 @@ class _AppShellState extends State<AppShell> {
   void initState() {
     super.initState();
     _pageController = PageController();
+    // Listen for navigation requests from other parts of the app.
+    ref.listen<int?>(navRequestProvider, (previous, next) {
+      if (next != null) {
+        _jumpTo(next);
+        // clear the request
+        Future.microtask(() => ref.read(navRequestProvider.notifier).state = null);
+      }
+    });
   }
 
   @override
@@ -156,7 +167,11 @@ class _AppShellState extends State<AppShell> {
           physics: const NeverScrollableScrollPhysics(),
           onPageChanged: (index) => setState(() => _currentIndex = index),
           children: [
-            HomeScreen(onGoToJournal: () => _jumpTo(1)),
+            HomeScreen(
+              onGoToJournal: () => _jumpTo(2),
+              onGoToUnstuck: () => _jumpTo(1),
+            ),
+            UnstuckScreen(onGoToJournal: () => _jumpTo(2)),
             const JournalScreen(),
             const InsightsScreen(),
             const SettingsScreen(),
