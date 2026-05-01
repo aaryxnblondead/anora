@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
@@ -81,15 +82,48 @@ class StorageService {
       Hive.registerAdapter(JournalEntryAdapter());
     }
 
-    final keyBytes = await _getOrCreateEncryptionKey();
-    _journalBox = await Hive.openBox<JournalEntry>(
-      _boxName,
-      encryptionCipher: HiveAesCipher(keyBytes),
-    );
-    _settingsBox = await Hive.openBox<dynamic>(
-      _settingsBoxName,
-      encryptionCipher: HiveAesCipher(keyBytes),
-    );
+    // Try to open boxes using the stored key. If opening fails (for example
+    // because the stored key is corrupt or doesn't match the existing box
+    // encryption), clear the persisted key and boxes and retry once so the
+    // app can recover instead of crashing on startup.
+    Uint8List keyBytes = await _getOrCreateEncryptionKey();
+    try {
+      _journalBox = await Hive.openBox<JournalEntry>(
+        _boxName,
+        encryptionCipher: HiveAesCipher(keyBytes),
+      );
+      _settingsBox = await Hive.openBox<dynamic>(
+        _settingsBoxName,
+        encryptionCipher: HiveAesCipher(keyBytes),
+      );
+    } catch (e) {
+      // If opening the box failed, remove stored key and any existing box
+      // files so we can recreate them with a fresh key. This prevents
+      // unrecoverable BadPadding/BadDecrypt errors when a previous key
+      // doesn't match the on-disk data.
+      try {
+        await _secureStorage.delete(key: _secureKeyName);
+      } catch (_) {}
+
+      try {
+        await Hive.deleteBoxFromDisk(_boxName);
+      } catch (_) {}
+
+      try {
+        await Hive.deleteBoxFromDisk(_settingsBoxName);
+      } catch (_) {}
+
+      // Generate a new key and try again once.
+      keyBytes = await _getOrCreateEncryptionKey();
+      _journalBox = await Hive.openBox<JournalEntry>(
+        _boxName,
+        encryptionCipher: HiveAesCipher(keyBytes),
+      );
+      _settingsBox = await Hive.openBox<dynamic>(
+        _settingsBoxName,
+        encryptionCipher: HiveAesCipher(keyBytes),
+      );
+    }
   }
 
   bool readBoolSetting(String key, {required bool fallback}) {
@@ -139,16 +173,30 @@ class StorageService {
   }
 
   Future<Uint8List> _getOrCreateEncryptionKey() async {
-    final storedKey = await _secureStorage.read(key: _secureKeyName);
-    if (storedKey != null) {
-      return base64Url.decode(storedKey);
+    try {
+      final storedKey = await _secureStorage.read(key: _secureKeyName);
+      if (storedKey != null) {
+        return base64Url.decode(storedKey);
+      }
+    } catch (e) {
+      // Key corrupted or decryption failed - delete and regenerate
+      debugPrint('⚠️ Encryption key corrupted, regenerating: $e');
+      try {
+        await _secureStorage.delete(key: _secureKeyName);
+      } catch (deleteError) {
+        debugPrint('⚠️ Failed to delete corrupted encryption key: $deleteError');
+      }
     }
 
     final keyBytes = _generateSecureKey();
-    await _secureStorage.write(
-      key: _secureKeyName,
-      value: base64UrlEncode(keyBytes),
-    );
+    try {
+      await _secureStorage.write(
+        key: _secureKeyName,
+        value: base64UrlEncode(keyBytes),
+      );
+    } catch (writeError) {
+      debugPrint('⚠️ Failed to persist regenerated encryption key: $writeError');
+    }
 
     return keyBytes;
   }
