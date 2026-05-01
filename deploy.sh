@@ -199,8 +199,7 @@ if [[ "$SKIP_APP_RUNNER" == "false" ]]; then
   aws apprunner update-service \
     --service-arn "$APP_RUNNER_ARN" \
     --region "$AWS_REGION" \
-    --source-configuration "ImageRepository={ImageIdentifier=$ECR_IMAGE_URI,ImageRepositoryType=ECR,ImageConfiguration={Port=8000,RuntimeEnvironmentVariables={DATABASE_URL=$DATABASE_URL}}}" \
-    --tags "Key=Environment,Value=production" "Key=LastDeploy,Value=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+    --source-configuration "ImageRepository={ImageIdentifier=$ECR_IMAGE_URI,ImageRepositoryType=ECR,ImageConfiguration={Port=8000,RuntimeEnvironmentVariables={DATABASE_URL=$DATABASE_URL}}}"
   
   log_success "App Runner deployment initiated"
   log_info "Waiting for deployment to complete (this may take 5-10 minutes)..."
