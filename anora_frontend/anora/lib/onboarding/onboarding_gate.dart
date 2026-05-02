@@ -6,7 +6,6 @@ import '../clinician/clinician_shell.dart';
 import '../main.dart';
 import '../models/user_role.dart';
 import '../services/clinician_push_registration_service.dart';
-import '../services/phone_otp_auth_service.dart';
 import '../services/secure_link_service.dart';
 import '../services/storage_service.dart';
 import '../state/role_controller.dart';
@@ -44,10 +43,6 @@ class _PatientOnboardingGate extends StatelessWidget {
       valueListenable: settingsBox.listenable(
         keys: const [
           'patient_onboarding_complete',
-          'auth_access_token',
-          'auth_role',
-          'auth_expires_at',
-          'auth_patient_device_id',
           'patient_device_id',
         ],
       ),
@@ -59,16 +54,6 @@ class _PatientOnboardingGate extends StatelessWidget {
             ) ==
             true;
         if (!isComplete) {
-          return const PatientOnboardingScreen();
-        }
-
-        final patientDeviceId =
-            (settingsBox.get('patient_device_id') as String?)?.trim();
-        final hasValidSession = PhoneOtpAuthService.instance.hasValidSessionForRole(
-          UserRole.patient,
-          patientDeviceId: patientDeviceId,
-        );
-        if (!hasValidSession) {
           return const PatientOnboardingScreen();
         }
 
@@ -89,11 +74,6 @@ class ClinicianOnboardingGate extends ConsumerWidget {
         keys: const [
           'clinician_onboarding_complete',
           'clinician_id',
-          'clinician_jwt',
-          'auth_access_token',
-          'auth_role',
-          'auth_expires_at',
-          'auth_clinician_id',
         ],
       ),
       builder: (context, box, child) {
@@ -106,14 +86,6 @@ class ClinicianOnboardingGate extends ConsumerWidget {
         final clinicianId = box.get('clinician_id') as String?;
         if (clinicianId == null || clinicianId.isEmpty) {
           // This is an inconsistent state. Go back to onboarding to be safe.
-          return const ClinicianOnboardingScreen();
-        }
-
-        final hasValidSession = PhoneOtpAuthService.instance.hasValidSessionForRole(
-          UserRole.clinician,
-          clinicianId: clinicianId,
-        );
-        if (!hasValidSession) {
           return const ClinicianOnboardingScreen();
         }
 

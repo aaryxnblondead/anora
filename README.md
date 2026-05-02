@@ -16,6 +16,10 @@
 - Open the Flutter web app with `?portal=admin`
 - Sign in with `ADMIN_MONITOR_API_KEY` to view live auth, care, and FL metrics for implementation reviews
 
+**Email OTP Delivery Requirements:**
+- Configure `AWS_SES_FROM_EMAIL` with a verified SES sender address
+- Ensure App Runner runtime role has `ses:SendEmail` permission in the deployed region
+
 **For Deployment Details:** See `DEPLOYMENT_VERIFICATION_GUIDE.md` and `RELEASE_BUILD_GUIDE.md`
 
 ### What Changed in May 2026
@@ -304,8 +308,8 @@ Anora backend is deployed on **AWS App Runner** (as of May 2026), backed by a ma
 - `OTP_TTL_SECONDS` - OTP validity window in seconds (recommended: `300`)
 - `OTP_MAX_ATTEMPTS` - Max OTP verification attempts per challenge (recommended: `5`)
 - `OTP_DEBUG_ECHO` - Must be `false` in production
-- `AWS_SMS_TYPE` - `Transactional` for OTP delivery
-- `AWS_SNS_SMS_SENDER_ID` - Sender ID (country/carrier dependent)
+- `AWS_SES_FROM_EMAIL` - Verified SES sender email for OTP delivery
+- `OTP_EMAIL_SUBJECT` - Optional subject line for OTP email messages
 
 **Optional but Recommended:**
 - `ALLOWED_ORIGINS` - CORS whitelist (default: `https://d1p1fpleu1yzws.cloudfront.net`)
@@ -334,10 +338,10 @@ See `backend/.env.production.template` for complete reference with descriptions.
 3. **Deploy to App Runner:**
    Update the App Runner service with the new image:
    ```bash
-   # Runtime role must allow sns:Publish for OTP SMS
+   # Runtime role must allow ses:SendEmail for OTP email
    aws iam simulate-principal-policy \
      --policy-source-arn "$APP_RUNNER_RUNTIME_ROLE_ARN" \
-     --action-names sns:Publish \
+     --action-names ses:SendEmail \
      --resource-arns "*" \
      --query 'EvaluationResults[0].EvalDecision' \
      --output text
@@ -345,7 +349,7 @@ See `backend/.env.production.template` for complete reference with descriptions.
    # Expected output: allowed
 
    aws apprunner update-service --service-arn <your-service-arn> \
-     --source-configuration "ImageRepository={ImageIdentifier=027277540377.dkr.ecr.us-east-1.amazonaws.com/anora-backend:latest,ImageRepositoryType=ECR,ImageConfiguration={Port=8000,RuntimeEnvironmentVariables={DATABASE_URL=$DATABASE_URL,AWS_REGION=$AWS_REGION,AUTH_JWT_SECRET=$AUTH_JWT_SECRET,AUTH_JWT_EXP_SECONDS=$AUTH_JWT_EXP_SECONDS,OTP_TTL_SECONDS=$OTP_TTL_SECONDS,OTP_MAX_ATTEMPTS=$OTP_MAX_ATTEMPTS,OTP_DEBUG_ECHO=$OTP_DEBUG_ECHO,AWS_SMS_TYPE=$AWS_SMS_TYPE,AWS_SNS_SMS_SENDER_ID=$AWS_SNS_SMS_SENDER_ID}}}" \
+     --source-configuration "ImageRepository={ImageIdentifier=027277540377.dkr.ecr.us-east-1.amazonaws.com/anora-backend:latest,ImageRepositoryType=ECR,ImageConfiguration={Port=8000,RuntimeEnvironmentVariables={DATABASE_URL=$DATABASE_URL,AWS_REGION=$AWS_REGION,AUTH_JWT_SECRET=$AUTH_JWT_SECRET,AUTH_JWT_EXP_SECONDS=$AUTH_JWT_EXP_SECONDS,OTP_TTL_SECONDS=$OTP_TTL_SECONDS,OTP_MAX_ATTEMPTS=$OTP_MAX_ATTEMPTS,OTP_DEBUG_ECHO=$OTP_DEBUG_ECHO,AWS_SES_FROM_EMAIL=$AWS_SES_FROM_EMAIL,OTP_EMAIL_SUBJECT=$OTP_EMAIL_SUBJECT}}}" \
      --instance-configuration "InstanceRoleArn=$APP_RUNNER_RUNTIME_ROLE_ARN"
    ```
 

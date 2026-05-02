@@ -56,8 +56,8 @@ OTP_TTL_SECONDS="${OTP_TTL_SECONDS:-300}"
 OTP_MAX_ATTEMPTS="${OTP_MAX_ATTEMPTS:-5}"
 OTP_DEBUG_ECHO="${OTP_DEBUG_ECHO:-false}"
 ADMIN_MONITOR_API_KEY="${ADMIN_MONITOR_API_KEY:-}"
-AWS_SMS_TYPE="${AWS_SMS_TYPE:-Transactional}"
-AWS_SNS_SMS_SENDER_ID="${AWS_SNS_SMS_SENDER_ID:-ANORA}"
+AWS_SES_FROM_EMAIL="${AWS_SES_FROM_EMAIL:-}"
+OTP_EMAIL_SUBJECT="${OTP_EMAIL_SUBJECT:-Your Anora verification code}"
 APP_RUNNER_RUNTIME_ROLE_ARN="${APP_RUNNER_RUNTIME_ROLE_ARN:-}"
 
 # Parse arguments
@@ -73,8 +73,8 @@ while [[ $# -gt 0 ]]; do
     --otp-max-attempts) OTP_MAX_ATTEMPTS="$2"; shift 2 ;;
     --otp-debug-echo) OTP_DEBUG_ECHO="$2"; shift 2 ;;
     --admin-monitor-api-key) ADMIN_MONITOR_API_KEY="$2"; shift 2 ;;
-    --aws-sms-type) AWS_SMS_TYPE="$2"; shift 2 ;;
-    --aws-sns-sms-sender-id) AWS_SNS_SMS_SENDER_ID="$2"; shift 2 ;;
+    --aws-ses-from-email) AWS_SES_FROM_EMAIL="$2"; shift 2 ;;
+    --otp-email-subject) OTP_EMAIL_SUBJECT="$2"; shift 2 ;;
     --runtime-role-arn) APP_RUNNER_RUNTIME_ROLE_ARN="$2"; shift 2 ;;
     --docker-image) DOCKER_IMAGE="$2"; shift 2 ;;
     --app-runner-arn) APP_RUNNER_ARN="$2"; shift 2 ;;
@@ -104,6 +104,7 @@ require_numeric() {
 require_non_empty "DATABASE_URL" "Use --db-url or set environment variable."
 require_non_empty "AUTH_JWT_SECRET" "Use --auth-jwt-secret or set AUTH_JWT_SECRET in CloudShell."
 require_non_empty "ADMIN_MONITOR_API_KEY" "Use --admin-monitor-api-key or set ADMIN_MONITOR_API_KEY in CloudShell."
+require_non_empty "AWS_SES_FROM_EMAIL" "Set a verified SES sender as AWS_SES_FROM_EMAIL for email OTP delivery."
 
 if [[ -z "${AWS_ACCOUNT:-}" ]] || [[ -z "${AWS_REGION:-}" ]]; then
   log_error "AWS account/region not set. Use --aws-account and --aws-region."
@@ -117,16 +118,6 @@ require_numeric "OTP_MAX_ATTEMPTS"
 OTP_DEBUG_ECHO="$(echo "$OTP_DEBUG_ECHO" | tr '[:upper:]' '[:lower:]')"
 if [[ "$OTP_DEBUG_ECHO" != "true" && "$OTP_DEBUG_ECHO" != "false" ]]; then
   log_error "OTP_DEBUG_ECHO must be either true or false. Current value: $OTP_DEBUG_ECHO"
-  exit 1
-fi
-
-AWS_SMS_TYPE_LOWER="$(echo "$AWS_SMS_TYPE" | tr '[:upper:]' '[:lower:]')"
-if [[ "$AWS_SMS_TYPE_LOWER" == "transactional" ]]; then
-  AWS_SMS_TYPE="Transactional"
-elif [[ "$AWS_SMS_TYPE_LOWER" == "promotional" ]]; then
-  AWS_SMS_TYPE="Promotional"
-else
-  log_error "AWS_SMS_TYPE must be Transactional or Promotional. Current value: $AWS_SMS_TYPE"
   exit 1
 fi
 
@@ -146,8 +137,8 @@ log_info "OTP_TTL_SECONDS: $OTP_TTL_SECONDS"
 log_info "OTP_MAX_ATTEMPTS: $OTP_MAX_ATTEMPTS"
 log_info "OTP_DEBUG_ECHO: $OTP_DEBUG_ECHO"
 log_info "ADMIN_MONITOR_API_KEY: [configured]"
-log_info "AWS_SMS_TYPE: $AWS_SMS_TYPE"
-log_info "AWS_SNS_SMS_SENDER_ID: ${AWS_SNS_SMS_SENDER_ID:-<empty>}"
+log_info "AWS_SES_FROM_EMAIL: [configured]"
+log_info "OTP_EMAIL_SUBJECT: ${OTP_EMAIL_SUBJECT:-<default>}"
 
 ###############################################################################
 # Step 1: Clone or update repository
@@ -269,29 +260,29 @@ if [[ "$SKIP_APP_RUNNER" == "false" ]]; then
   fi
 
   if [[ -z "$APP_RUNNER_RUNTIME_ROLE_ARN" ]]; then
-    log_error "App Runner runtime role ARN is required for OTP SMS. Set APP_RUNNER_RUNTIME_ROLE_ARN or pass --runtime-role-arn."
+    log_error "App Runner runtime role ARN is required for OTP email. Set APP_RUNNER_RUNTIME_ROLE_ARN or pass --runtime-role-arn."
     exit 1
   fi
 
-  log_info "Validating SNS publish permissions for runtime role..."
-  SNS_PUBLISH_DECISION=$(aws iam simulate-principal-policy \
+  log_info "Validating SES send-email permissions for runtime role..."
+  SES_SEND_EMAIL_DECISION=$(aws iam simulate-principal-policy \
     --policy-source-arn "$APP_RUNNER_RUNTIME_ROLE_ARN" \
-    --action-names sns:Publish \
+    --action-names ses:SendEmail \
     --resource-arns "*" \
     --query 'EvaluationResults[0].EvalDecision' \
     --output text 2>/dev/null || echo "ERROR")
 
-  if [[ "$SNS_PUBLISH_DECISION" != "allowed" && "$SNS_PUBLISH_DECISION" != "Allowed" ]]; then
-    if [[ "$SNS_PUBLISH_DECISION" == "ERROR" ]]; then
-      log_error "Could not validate sns:Publish on runtime role. Ensure deploy identity has iam:SimulatePrincipalPolicy."
+  if [[ "$SES_SEND_EMAIL_DECISION" != "allowed" && "$SES_SEND_EMAIL_DECISION" != "Allowed" ]]; then
+    if [[ "$SES_SEND_EMAIL_DECISION" == "ERROR" ]]; then
+      log_error "Could not validate ses:SendEmail on runtime role. Ensure deploy identity has iam:SimulatePrincipalPolicy."
     else
-      log_error "Runtime role is missing sns:Publish permission (decision: $SNS_PUBLISH_DECISION)."
+      log_error "Runtime role is missing ses:SendEmail permission (decision: $SES_SEND_EMAIL_DECISION)."
     fi
-    log_info "Attach policy with sns:Publish to role: $APP_RUNNER_RUNTIME_ROLE_ARN"
+    log_info "Attach policy with ses:SendEmail to role: $APP_RUNNER_RUNTIME_ROLE_ARN"
     exit 1
   fi
 
-  log_success "Runtime role can publish OTP SMS via SNS"
+  log_success "Runtime role can send OTP email via SES"
 fi
 
 ###############################################################################
@@ -385,8 +376,8 @@ if [[ "$SKIP_APP_RUNNER" == "false" ]]; then
     OTP_MAX_ATTEMPTS="$OTP_MAX_ATTEMPTS" \
     OTP_DEBUG_ECHO="$OTP_DEBUG_ECHO" \
     ADMIN_MONITOR_API_KEY="$ADMIN_MONITOR_API_KEY" \
-    AWS_SMS_TYPE="$AWS_SMS_TYPE" \
-    AWS_SNS_SMS_SENDER_ID="$AWS_SNS_SMS_SENDER_ID" \
+    AWS_SES_FROM_EMAIL="$AWS_SES_FROM_EMAIL" \
+    OTP_EMAIL_SUBJECT="$OTP_EMAIL_SUBJECT" \
     python3 - <<'PY'
 import json
 import os
@@ -414,8 +405,8 @@ runtime_env.update(
         "OTP_MAX_ATTEMPTS": os.getenv("OTP_MAX_ATTEMPTS", ""),
         "OTP_DEBUG_ECHO": os.getenv("OTP_DEBUG_ECHO", ""),
         "ADMIN_MONITOR_API_KEY": os.getenv("ADMIN_MONITOR_API_KEY", ""),
-        "AWS_SMS_TYPE": os.getenv("AWS_SMS_TYPE", ""),
-        "AWS_SNS_SMS_SENDER_ID": os.getenv("AWS_SNS_SMS_SENDER_ID", ""),
+        "AWS_SES_FROM_EMAIL": os.getenv("AWS_SES_FROM_EMAIL", ""),
+        "OTP_EMAIL_SUBJECT": os.getenv("OTP_EMAIL_SUBJECT", ""),
     }
 )
 

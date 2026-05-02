@@ -27,8 +27,8 @@ export AUTH_JWT_EXP_SECONDS="86400"
 export OTP_TTL_SECONDS="300"
 export OTP_MAX_ATTEMPTS="5"
 export OTP_DEBUG_ECHO="false"
-export AWS_SMS_TYPE="Transactional"
-export AWS_SNS_SMS_SENDER_ID="ANORA"
+export AWS_SES_FROM_EMAIL="no-reply@yourdomain.com"
+export OTP_EMAIL_SUBJECT="Your Anora verification code"
 ```
 
 **Where to get these values:**
@@ -39,7 +39,7 @@ export AWS_SNS_SMS_SENDER_ID="ANORA"
 - **APP_RUNNER_RUNTIME_ROLE_ARN**: App Runner service → Instance configuration → Instance role ARN
 - **AUTH_JWT_SECRET**: Generate a strong random secret and store in a secure secret manager
 
-Before deploying, verify runtime role permission for OTP SMS:
+Before deploying, verify runtime role permission for OTP email:
 
 ```bash
 aws iam simulate-principal-policy \
@@ -166,8 +166,8 @@ export AUTH_JWT_EXP_SECONDS="86400"
 export OTP_TTL_SECONDS="300"
 export OTP_MAX_ATTEMPTS="5"
 export OTP_DEBUG_ECHO="false"
-export AWS_SMS_TYPE="Transactional"
-export AWS_SNS_SMS_SENDER_ID="ANORA"
+export AWS_SES_FROM_EMAIL="no-reply@yourdomain.com"
+export OTP_EMAIL_SUBJECT="Your Anora verification code"
 EOF
 
 # Load it
@@ -353,7 +353,7 @@ aws apprunner list-services --region "$AWS_REGION" --output table
 # 4. Use ECR image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/anora-backend:latest
 # 5. Port: 8000
 # 6. Environment variables: DATABASE_URL, AUTH_JWT_SECRET, AUTH_JWT_EXP_SECONDS, OTP_TTL_SECONDS,
-#    OTP_MAX_ATTEMPTS, OTP_DEBUG_ECHO, AWS_SMS_TYPE, AWS_SNS_SMS_SENDER_ID, AWS_REGION, ALLOWED_ORIGINS, etc.
+#    OTP_MAX_ATTEMPTS, OTP_DEBUG_ECHO, AWS_SES_FROM_EMAIL, OTP_EMAIL_SUBJECT, AWS_REGION, ALLOWED_ORIGINS, etc.
 # 7. Create
 
 # Then re-run deploy.sh with --app-runner-arn flag
@@ -421,7 +421,7 @@ DATABASE_URL="$DATABASE_URL" python3 init_prod_db.py
 aws apprunner update-service \
   --service-arn "$APP_RUNNER_ARN" \
   --region "$AWS_REGION" \
-  --source-configuration "ImageRepository={ImageIdentifier=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/anora-backend:latest,ImageRepositoryType=ECR,ImageConfiguration={Port=8000,RuntimeEnvironmentVariables={DATABASE_URL=$DATABASE_URL,AWS_REGION=$AWS_REGION,AUTH_JWT_SECRET=$AUTH_JWT_SECRET,AUTH_JWT_EXP_SECONDS=$AUTH_JWT_EXP_SECONDS,OTP_TTL_SECONDS=$OTP_TTL_SECONDS,OTP_MAX_ATTEMPTS=$OTP_MAX_ATTEMPTS,OTP_DEBUG_ECHO=$OTP_DEBUG_ECHO,AWS_SMS_TYPE=$AWS_SMS_TYPE,AWS_SNS_SMS_SENDER_ID=$AWS_SNS_SMS_SENDER_ID}}}" \
+  --source-configuration "ImageRepository={ImageIdentifier=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/anora-backend:latest,ImageRepositoryType=ECR,ImageConfiguration={Port=8000,RuntimeEnvironmentVariables={DATABASE_URL=$DATABASE_URL,AWS_REGION=$AWS_REGION,AUTH_JWT_SECRET=$AUTH_JWT_SECRET,AUTH_JWT_EXP_SECONDS=$AUTH_JWT_EXP_SECONDS,OTP_TTL_SECONDS=$OTP_TTL_SECONDS,OTP_MAX_ATTEMPTS=$OTP_MAX_ATTEMPTS,OTP_DEBUG_ECHO=$OTP_DEBUG_ECHO,AWS_SES_FROM_EMAIL=$AWS_SES_FROM_EMAIL,OTP_EMAIL_SUBJECT=$OTP_EMAIL_SUBJECT}}}" \
   --instance-configuration "InstanceRoleArn=$APP_RUNNER_RUNTIME_ROLE_ARN"
 ```
 

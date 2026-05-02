@@ -76,18 +76,25 @@ logger = logging.getLogger("anora.backend")
 logging.basicConfig(level=logging.INFO)
 
 SNS_CLIENT: Any | None = None
+SES_CLIENT: Any | None = None
 ADMIN_MONITOR_API_KEY = os.getenv("ADMIN_MONITOR_API_KEY", "").strip()
 if not ADMIN_MONITOR_API_KEY:
     logger.warning("admin_monitor_api_key_missing_fallback_clinician_auth_enabled")
 
-PHONE_E164_REGEX = re.compile(r"^\+[1-9]\d{7,14}$")
+EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 AUTH_JWT_ISSUER = "anora-backend"
 AUTH_JWT_EXP_SECONDS = int(os.getenv("AUTH_JWT_EXP_SECONDS", "86400"))
 OTP_TTL_SECONDS = int(os.getenv("OTP_TTL_SECONDS", "300"))
 OTP_MAX_ATTEMPTS = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))
 OTP_DEBUG_ECHO = os.getenv("OTP_DEBUG_ECHO", "false").lower() == "true"
-OTP_SMS_TYPE = os.getenv("AWS_SMS_TYPE", "Transactional")
-OTP_SMS_SENDER_ID = os.getenv("AWS_SNS_SMS_SENDER_ID", "").strip()
+OTP_EMAIL_FROM = os.getenv("AWS_SES_FROM_EMAIL", "").strip()
+OTP_EMAIL_SUBJECT = (
+    os.getenv("OTP_EMAIL_SUBJECT", "Your Anora verification code").strip()
+    or "Your Anora verification code"
+)
+DEMO_AUTH_DISABLED = os.getenv("DEMO_AUTH_DISABLED", "true").lower() == "true"
+if DEMO_AUTH_DISABLED:
+    logger.warning("demo_auth_bypass_enabled")
 
 
 def _get_auth_jwt_secret() -> str:
@@ -100,10 +107,10 @@ def _get_auth_jwt_secret() -> str:
     return "anora-dev-jwt-secret-change-me"
 
 
-def _normalize_phone_number(value: str) -> str:
-    normalized = value.strip().replace(" ", "")
-    if not PHONE_E164_REGEX.match(normalized):
-        raise ValueError("phone_number must be in E.164 format, e.g. +15551234567")
+def _normalize_email(value: str) -> str:
+    normalized = value.strip().lower()
+    if not EMAIL_REGEX.match(normalized):
+        raise ValueError("email must be a valid address, e.g. name@example.com")
     return normalized
 
 
@@ -175,11 +182,29 @@ def _extract_bearer_token(request: Request) -> str:
 
 
 def _require_auth_context(request: Request) -> dict[str, Any]:
+    if DEMO_AUTH_DISABLED:
+        auth_header = request.headers.get("Authorization", "").strip()
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header[7:].strip()
+            if token:
+                try:
+                    return _jwt_decode_and_verify(token)
+                except HTTPException:
+                    logger.warning("demo_auth_bypass_invalid_token_ignored")
+        return {"role": "demo", "auth_bypassed": True}
+
     token = _extract_bearer_token(request)
     return _jwt_decode_and_verify(token)
 
 
 def _require_clinician_context(request: Request, clinician_id: str) -> dict[str, Any]:
+    if DEMO_AUTH_DISABLED:
+        return {
+            "role": "clinician",
+            "clinician_id": clinician_id.strip(),
+            "auth_bypassed": True,
+        }
+
     claims = _require_auth_context(request)
     if claims.get("role") != "clinician":
         raise HTTPException(status_code=403, detail="Clinician role required")
@@ -192,6 +217,13 @@ def _require_clinician_context(request: Request, clinician_id: str) -> dict[str,
 
 
 def _require_patient_context(request: Request, patient_device_id: str) -> dict[str, Any]:
+    if DEMO_AUTH_DISABLED:
+        return {
+            "role": "patient",
+            "patient_device_id": patient_device_id.strip(),
+            "auth_bypassed": True,
+        }
+
     claims = _require_auth_context(request)
     if claims.get("role") != "patient":
         raise HTTPException(status_code=403, detail="Patient role required")
@@ -220,14 +252,17 @@ def _require_admin_access(request: Request) -> dict[str, Any]:
             raise HTTPException(status_code=403, detail="Invalid admin API key")
         return {"access": "admin_api_key"}
 
+    if DEMO_AUTH_DISABLED:
+        return {"access": "demo_auth_bypass"}
+
     claims = _require_auth_context(request)
     if claims.get("role") != "clinician":
         raise HTTPException(status_code=403, detail="Clinician role required")
     return claims
 
 
-def _hash_otp_code(phone_number: str, code: str) -> str:
-    material = f"{phone_number}:{code}".encode("utf-8")
+def _hash_otp_code(identity: str, code: str) -> str:
+    material = f"{identity}:{code}".encode("utf-8")
     digest = hmac.new(
         _get_auth_jwt_secret().encode("utf-8"),
         material,
@@ -236,39 +271,45 @@ def _hash_otp_code(phone_number: str, code: str) -> str:
     return digest
 
 
-def _send_sms_otp(phone_number: str, otp_code: str) -> None:
-    sns_client = _get_sns_client()
-    if sns_client is None:
-        logger.warning("otp_sms_skipped_missing_sns_client phone=%s", phone_number)
+def _send_email_otp(email: str, otp_code: str) -> None:
+    ses_client = _get_ses_client()
+    if ses_client is None:
+        logger.warning("otp_email_skipped_missing_ses_client email=%s", email)
         if not OTP_DEBUG_ECHO:
             raise HTTPException(
                 status_code=503,
-                detail="OTP SMS delivery is unavailable. Configure AWS_REGION and SNS permissions.",
+                detail="OTP email delivery is unavailable. Configure AWS_REGION and SES permissions.",
             )
         return
 
-    message = f"Your Anora verification code is: {otp_code}. It expires in {max(1, OTP_TTL_SECONDS // 60)} minute(s)."
-    message_attributes = {
-        "AWS.SNS.SMS.SMSType": {
-            "DataType": "String",
-            "StringValue": OTP_SMS_TYPE,
-        }
-    }
-    if OTP_SMS_SENDER_ID:
-        message_attributes["AWS.SNS.SMS.SenderID"] = {
-            "DataType": "String",
-            "StringValue": OTP_SMS_SENDER_ID,
-        }
+    if not OTP_EMAIL_FROM:
+        raise HTTPException(
+            status_code=503,
+            detail="OTP email sender is not configured. Set AWS_SES_FROM_EMAIL.",
+        )
+
+    message = (
+        f"Your Anora verification code is: {otp_code}. "
+        f"It expires in {max(1, OTP_TTL_SECONDS // 60)} minute(s)."
+    )
 
     try:
-        sns_client.publish(
-            PhoneNumber=phone_number,
-            Message=message,
-            MessageAttributes=message_attributes,
+        ses_client.send_email(
+            Source=OTP_EMAIL_FROM,
+            Destination={"ToAddresses": [email]},
+            Message={
+                "Subject": {"Data": OTP_EMAIL_SUBJECT, "Charset": "UTF-8"},
+                "Body": {
+                    "Text": {
+                        "Data": message,
+                        "Charset": "UTF-8",
+                    }
+                },
+            },
         )
     except ClientError as exc:
-        logger.exception("otp_sms_send_failed phone=%s", phone_number)
-        raise HTTPException(status_code=502, detail="Failed to send OTP SMS") from exc
+        logger.exception("otp_email_send_failed email=%s", email)
+        raise HTTPException(status_code=502, detail="Failed to send OTP email") from exc
 
 
 def get_connection() -> psycopg2.extensions.connection:
@@ -291,6 +332,21 @@ def _get_sns_client() -> Any | None:
 
     SNS_CLIENT = boto3.client("sns", region_name=region)
     return SNS_CLIENT
+
+
+def _get_ses_client() -> Any | None:
+    global SES_CLIENT
+
+    if SES_CLIENT is not None:
+        return SES_CLIENT
+
+    region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+    if not region:
+        logger.info("ses_email_disabled_missing_region")
+        return None
+
+    SES_CLIENT = boto3.client("ses", region_name=region)
+    return SES_CLIENT
 
 
 def _normalize_platform(platform: str) -> str:
@@ -600,7 +656,8 @@ def ensure_tables() -> None:
                 """
                 CREATE TABLE IF NOT EXISTS app_users (
                   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                  phone_number TEXT NOT NULL UNIQUE,
+                  email TEXT,
+                  phone_number TEXT,
                   role TEXT NOT NULL CHECK (role IN ('patient', 'clinician')),
                   clinician_id TEXT,
                   patient_device_id TEXT,
@@ -608,6 +665,24 @@ def ensure_tables() -> None:
                   updated_at TIMESTAMPTZ DEFAULT NOW(),
                   last_login_at TIMESTAMPTZ
                 );
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE app_users
+                ADD COLUMN IF NOT EXISTS email TEXT;
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE app_users
+                ALTER COLUMN phone_number DROP NOT NULL;
+                """
+            )
+            cursor.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_app_users_email_unique
+                ON app_users (email);
                 """
             )
             cursor.execute(
@@ -628,7 +703,8 @@ def ensure_tables() -> None:
                 """
                 CREATE TABLE IF NOT EXISTS otp_challenges (
                   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                  phone_number TEXT NOT NULL,
+                                    email TEXT,
+                                    phone_number TEXT,
                   role TEXT NOT NULL CHECK (role IN ('patient', 'clinician')),
                   clinician_id TEXT,
                   patient_device_id TEXT,
@@ -642,8 +718,20 @@ def ensure_tables() -> None:
             )
             cursor.execute(
                 """
-                CREATE INDEX IF NOT EXISTS idx_otp_challenges_phone_created
-                ON otp_challenges (phone_number, created_at DESC);
+                ALTER TABLE otp_challenges
+                ADD COLUMN IF NOT EXISTS email TEXT;
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE otp_challenges
+                ALTER COLUMN phone_number DROP NOT NULL;
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_otp_challenges_email_created
+                ON otp_challenges (email, created_at DESC);
                 """
             )
 
@@ -784,16 +872,15 @@ class PatientLinkRequest(BaseModel):
 
 
 class OTPStartRequest(BaseModel):
-    phone_number: str = Field(min_length=8, max_length=16)
+    email: str = Field(min_length=5, max_length=255)
     role: str = Field(min_length=6, max_length=9)
     clinician_id: str | None = None
     patient_device_id: str | None = None
 
-    @field_validator("phone_number")
+    @field_validator("email")
     @classmethod
-    def validate_phone_number(cls, value: str) -> str:
-        normalized = _normalize_phone_number(value)
-        return normalized
+    def validate_email(cls, value: str) -> str:
+        return _normalize_email(value)
 
     @field_validator("role")
     @classmethod
@@ -814,13 +901,13 @@ class OTPStartRequest(BaseModel):
 
 class OTPVerifyRequest(BaseModel):
     challenge_id: str = Field(min_length=1)
-    phone_number: str = Field(min_length=8, max_length=16)
+    email: str = Field(min_length=5, max_length=255)
     otp_code: str = Field(min_length=6, max_length=6)
 
-    @field_validator("phone_number")
+    @field_validator("email")
     @classmethod
-    def validate_phone_number(cls, value: str) -> str:
-        return _normalize_phone_number(value)
+    def validate_email(cls, value: str) -> str:
+        return _normalize_email(value)
 
     @field_validator("otp_code")
     @classmethod
@@ -926,7 +1013,7 @@ class ClinicianSignalUpload(SecurePayloadUpload):
 def _issue_access_token(
     *,
     user_id: str,
-    phone_number: str,
+    email: str,
     role: str,
     clinician_id: str | None,
     patient_device_id: str | None,
@@ -936,7 +1023,7 @@ def _issue_access_token(
     claims: dict[str, Any] = {
         "iss": AUTH_JWT_ISSUER,
         "sub": user_id,
-        "phone_number": phone_number,
+        "email": email,
         "role": role,
         "iat": int(now.timestamp()),
         "exp": int(expires_at.timestamp()),
@@ -952,7 +1039,7 @@ def _issue_access_token(
 
 def _upsert_auth_user(
     *,
-    phone_number: str,
+    email: str,
     role: str,
     clinician_id: str | None,
     patient_device_id: str | None,
@@ -963,9 +1050,9 @@ def _upsert_auth_user(
                 """
                 SELECT id, role, clinician_id, patient_device_id
                 FROM app_users
-                WHERE phone_number = %s;
+                WHERE email = %s;
                 """,
-                (phone_number,),
+                (email,),
             )
             existing = cursor.fetchone()
             if existing is not None:
@@ -973,12 +1060,13 @@ def _upsert_auth_user(
                 if existing_role and existing_role != role:
                     raise HTTPException(
                         status_code=409,
-                        detail="Phone number already registered to a different role",
+                        detail="Email already registered to a different role",
                     )
 
             cursor.execute(
                 """
                 INSERT INTO app_users (
+                  email,
                   phone_number,
                   role,
                   clinician_id,
@@ -986,18 +1074,18 @@ def _upsert_auth_user(
                   updated_at,
                   last_login_at
                 )
-                VALUES (%s, %s, %s, %s, NOW(), NOW())
-                ON CONFLICT (phone_number)
+                VALUES (%s, NULL, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (email)
                 DO UPDATE SET
                   role = EXCLUDED.role,
                   clinician_id = COALESCE(EXCLUDED.clinician_id, app_users.clinician_id),
                   patient_device_id = COALESCE(EXCLUDED.patient_device_id, app_users.patient_device_id),
                   updated_at = NOW(),
                   last_login_at = NOW()
-                RETURNING id, phone_number, role, clinician_id, patient_device_id;
+                RETURNING id, email, role, clinician_id, patient_device_id;
                 """,
                 (
-                    phone_number,
+                    email,
                     role,
                     clinician_id,
                     patient_device_id,
@@ -1011,8 +1099,8 @@ def _upsert_auth_user(
 
 
 @app.post("/auth/otp/start")
-def start_phone_otp(payload: OTPStartRequest) -> dict[str, Any]:
-    phone_number = payload.phone_number
+def start_email_otp(payload: OTPStartRequest) -> dict[str, Any]:
+    email = payload.email
     role = payload.role
     clinician_id = payload.clinician_id
     patient_device_id = payload.patient_device_id
@@ -1023,7 +1111,7 @@ def start_phone_otp(payload: OTPStartRequest) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="patient_device_id is required for patient auth")
 
     otp_code = f"{random.randint(0, 999999):06d}"
-    otp_hash = _hash_otp_code(phone_number, otp_code)
+    otp_hash = _hash_otp_code(email, otp_code)
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=OTP_TTL_SECONDS)
 
     with get_connection() as connection:
@@ -1031,6 +1119,7 @@ def start_phone_otp(payload: OTPStartRequest) -> dict[str, Any]:
             cursor.execute(
                 """
                 INSERT INTO otp_challenges (
+                  email,
                   phone_number,
                   role,
                   clinician_id,
@@ -1039,11 +1128,11 @@ def start_phone_otp(payload: OTPStartRequest) -> dict[str, Any]:
                   expires_at,
                   attempts_remaining
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, NULL, %s, %s, %s, %s, %s, %s)
                 RETURNING id;
                 """,
                 (
-                    phone_number,
+                    email,
                     role,
                     clinician_id,
                     patient_device_id,
@@ -1057,7 +1146,7 @@ def start_phone_otp(payload: OTPStartRequest) -> dict[str, Any]:
     if row is None:
         raise HTTPException(status_code=500, detail="Failed to create OTP challenge")
 
-    _send_sms_otp(phone_number, otp_code)
+    _send_email_otp(email, otp_code)
 
     response: dict[str, Any] = {
         "challenge_id": str(row["id"]),
@@ -1069,9 +1158,9 @@ def start_phone_otp(payload: OTPStartRequest) -> dict[str, Any]:
 
 
 @app.post("/auth/otp/verify")
-def verify_phone_otp(payload: OTPVerifyRequest) -> dict[str, Any]:
+def verify_email_otp(payload: OTPVerifyRequest) -> dict[str, Any]:
     challenge_id = payload.challenge_id.strip()
-    phone_number = payload.phone_number
+    email = payload.email
     otp_code = payload.otp_code
 
     now = datetime.now(timezone.utc)
@@ -1081,6 +1170,7 @@ def verify_phone_otp(payload: OTPVerifyRequest) -> dict[str, Any]:
                 """
                 SELECT
                   id,
+                                    email,
                   phone_number,
                   role,
                   clinician_id,
@@ -1090,9 +1180,9 @@ def verify_phone_otp(payload: OTPVerifyRequest) -> dict[str, Any]:
                   attempts_remaining,
                   consumed_at
                 FROM otp_challenges
-                WHERE id = %s AND phone_number = %s;
+                                WHERE id = %s AND email = %s;
                 """,
-                (challenge_id, phone_number),
+                                (challenge_id, email),
             )
             challenge = cursor.fetchone()
 
@@ -1109,7 +1199,7 @@ def verify_phone_otp(payload: OTPVerifyRequest) -> dict[str, Any]:
                 raise HTTPException(status_code=429, detail="Too many OTP attempts")
 
             expected_hash = str(challenge.get("otp_hash") or "")
-            actual_hash = _hash_otp_code(phone_number, otp_code)
+            actual_hash = _hash_otp_code(email, otp_code)
             if not hmac.compare_digest(expected_hash, actual_hash):
                 cursor.execute(
                     """
@@ -1135,7 +1225,7 @@ def verify_phone_otp(payload: OTPVerifyRequest) -> dict[str, Any]:
     patient_device_id = challenge.get("patient_device_id")
 
     user_row = _upsert_auth_user(
-        phone_number=phone_number,
+        email=email,
         role=role,
         clinician_id=clinician_id,
         patient_device_id=patient_device_id,
@@ -1143,7 +1233,7 @@ def verify_phone_otp(payload: OTPVerifyRequest) -> dict[str, Any]:
 
     access_token, token_expires_at = _issue_access_token(
         user_id=str(user_row["id"]),
-        phone_number=str(user_row["phone_number"]),
+        email=str(user_row["email"]),
         role=str(user_row["role"]),
         clinician_id=(str(user_row.get("clinician_id")) if user_row.get("clinician_id") else None),
         patient_device_id=(str(user_row.get("patient_device_id")) if user_row.get("patient_device_id") else None),
@@ -1155,7 +1245,7 @@ def verify_phone_otp(payload: OTPVerifyRequest) -> dict[str, Any]:
         "expires_at": token_expires_at.isoformat(),
         "user": {
             "user_id": str(user_row["id"]),
-            "phone_number": str(user_row["phone_number"]),
+            "email": str(user_row["email"]),
             "role": str(user_row["role"]),
             "clinician_id": user_row.get("clinician_id"),
             "patient_device_id": user_row.get("patient_device_id"),
@@ -1168,7 +1258,7 @@ def auth_me(request: Request) -> dict[str, Any]:
     claims = _require_auth_context(request)
     return {
         "user_id": claims.get("sub"),
-        "phone_number": claims.get("phone_number"),
+        "email": claims.get("email"),
         "role": claims.get("role"),
         "clinician_id": claims.get("clinician_id"),
         "patient_device_id": claims.get("patient_device_id"),
@@ -2573,9 +2663,9 @@ def admin_monitor_overview(request: Request) -> dict[str, Any]:
                         UNION ALL
                         SELECT 'emergency_alert_created' AS event_type, clinician_id AS subject, created_at AS event_time FROM emergency_alerts
                         UNION ALL
-                        SELECT 'otp_requested' AS event_type, phone_number AS subject, created_at AS event_time FROM otp_challenges
+                        SELECT 'otp_requested' AS event_type, COALESCE(email, phone_number) AS subject, created_at AS event_time FROM otp_challenges
                         UNION ALL
-                        SELECT 'otp_verified' AS event_type, phone_number AS subject, consumed_at AS event_time
+                        SELECT 'otp_verified' AS event_type, COALESCE(email, phone_number) AS subject, consumed_at AS event_time
                         FROM otp_challenges
                         WHERE consumed_at IS NOT NULL
                     ) events

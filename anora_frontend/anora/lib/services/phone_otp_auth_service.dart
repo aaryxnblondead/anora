@@ -11,7 +11,7 @@ class AuthSession {
   const AuthSession({
     required this.accessToken,
     required this.role,
-    required this.phoneNumber,
+    required this.email,
     required this.userId,
     required this.expiresAt,
     this.clinicianId,
@@ -20,7 +20,7 @@ class AuthSession {
 
   final String accessToken;
   final UserRole role;
-  final String phoneNumber;
+  final String email;
   final String userId;
   final DateTime expiresAt;
   final String? clinicianId;
@@ -39,7 +39,8 @@ class PhoneOtpAuthService {
 
   static const _tokenKey = 'auth_access_token';
   static const _roleKey = 'auth_role';
-  static const _phoneKey = 'auth_phone_number';
+  static const _emailKey = 'auth_email';
+  static const _legacyPhoneKey = 'auth_phone_number';
   static const _userIdKey = 'auth_user_id';
   static const _expiresAtKey = 'auth_expires_at';
   static const _clinicianIdKey = 'auth_clinician_id';
@@ -49,11 +50,14 @@ class PhoneOtpAuthService {
     final box = StorageService.instance.settingsBox;
     final token = (box.get(_tokenKey) as String?)?.trim() ?? '';
     final roleRaw = (box.get(_roleKey) as String?)?.trim() ?? '';
-    final phone = (box.get(_phoneKey) as String?)?.trim() ?? '';
+    final email =
+        (box.get(_emailKey) as String?)?.trim() ??
+        (box.get(_legacyPhoneKey) as String?)?.trim() ??
+        '';
     final userId = (box.get(_userIdKey) as String?)?.trim() ?? '';
     final expiresRaw = (box.get(_expiresAtKey) as String?)?.trim() ?? '';
 
-    if (token.isEmpty || roleRaw.isEmpty || phone.isEmpty || userId.isEmpty || expiresRaw.isEmpty) {
+    if (token.isEmpty || roleRaw.isEmpty || email.isEmpty || userId.isEmpty || expiresRaw.isEmpty) {
       return null;
     }
 
@@ -70,7 +74,7 @@ class PhoneOtpAuthService {
     return AuthSession(
       accessToken: token,
       role: role,
-      phoneNumber: phone,
+      email: email,
       userId: userId,
       expiresAt: expiresAt,
       clinicianId: (box.get(_clinicianIdKey) as String?)?.trim(),
@@ -106,14 +110,14 @@ class PhoneOtpAuthService {
   }
 
   Future<String> requestOtp({
-    required String phoneNumber,
+    required String email,
     required UserRole role,
     String? clinicianId,
     String? patientDeviceId,
   }) async {
-    final normalizedPhone = _normalizePhone(phoneNumber);
+    final normalizedEmail = _normalizeEmail(email);
     final payload = <String, dynamic>{
-      'phone_number': normalizedPhone,
+      'email': normalizedEmail,
       'role': role.storageValue,
       if (clinicianId != null && clinicianId.trim().isNotEmpty)
         'clinician_id': clinicianId.trim(),
@@ -147,12 +151,12 @@ class PhoneOtpAuthService {
 
   Future<AuthSession> verifyOtp({
     required String challengeId,
-    required String phoneNumber,
+    required String email,
     required String otpCode,
   }) async {
     final payload = <String, dynamic>{
       'challenge_id': challengeId.trim(),
-      'phone_number': _normalizePhone(phoneNumber),
+      'email': _normalizeEmail(email),
       'otp_code': otpCode.trim(),
     };
 
@@ -193,14 +197,14 @@ class PhoneOtpAuthService {
     final session = AuthSession(
       accessToken: token,
       role: role,
-      phoneNumber: (user['phone_number'] as String?)?.trim() ?? '',
+      email: (user['email'] as String?)?.trim() ?? '',
       userId: (user['user_id'] as String?)?.trim() ?? '',
       expiresAt: expiresAt,
       clinicianId: (user['clinician_id'] as String?)?.trim(),
       patientDeviceId: (user['patient_device_id'] as String?)?.trim(),
     );
 
-    if (session.phoneNumber.isEmpty || session.userId.isEmpty) {
+    if (session.email.isEmpty || session.userId.isEmpty) {
       throw Exception('Auth session payload missing required user fields.');
     }
 
@@ -212,7 +216,8 @@ class PhoneOtpAuthService {
     final box = StorageService.instance.settingsBox;
     await box.delete(_tokenKey);
     await box.delete(_roleKey);
-    await box.delete(_phoneKey);
+    await box.delete(_emailKey);
+    await box.delete(_legacyPhoneKey);
     await box.delete(_userIdKey);
     await box.delete(_expiresAtKey);
     await box.delete(_clinicianIdKey);
@@ -224,7 +229,8 @@ class PhoneOtpAuthService {
     final box = StorageService.instance.settingsBox;
     await box.put(_tokenKey, session.accessToken);
     await box.put(_roleKey, session.role.storageValue);
-    await box.put(_phoneKey, session.phoneNumber);
+    await box.put(_emailKey, session.email);
+    await box.delete(_legacyPhoneKey);
     await box.put(_userIdKey, session.userId);
     await box.put(_expiresAtKey, session.expiresAt.toUtc().toIso8601String());
 
@@ -258,10 +264,11 @@ class PhoneOtpAuthService {
     }
   }
 
-  String _normalizePhone(String phoneNumber) {
-    final normalized = phoneNumber.trim().replaceAll(' ', '');
-    if (normalized.isEmpty || !normalized.startsWith('+')) {
-      throw Exception('Use phone number in E.164 format, e.g. +15551234567');
+  String _normalizeEmail(String email) {
+    final normalized = email.trim().toLowerCase();
+    final emailPattern = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+    if (!emailPattern.hasMatch(normalized)) {
+      throw Exception('Use a valid email address, e.g. name@example.com');
     }
     return normalized;
   }
