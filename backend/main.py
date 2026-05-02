@@ -6,6 +6,11 @@ import os
 import time
 import random
 import string
+import base64
+import hashlib
+import hmac
+import re
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -16,7 +21,7 @@ import boto3
 import psycopg2
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from psycopg2.extras import Json, RealDictCursor
@@ -70,6 +75,172 @@ logger = logging.getLogger("anora.backend")
 logging.basicConfig(level=logging.INFO)
 
 SNS_CLIENT: Any | None = None
+PHONE_E164_REGEX = re.compile(r"^\+[1-9]\d{7,14}$")
+AUTH_JWT_ISSUER = "anora-backend"
+AUTH_JWT_EXP_SECONDS = int(os.getenv("AUTH_JWT_EXP_SECONDS", "86400"))
+OTP_TTL_SECONDS = int(os.getenv("OTP_TTL_SECONDS", "300"))
+OTP_MAX_ATTEMPTS = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))
+OTP_DEBUG_ECHO = os.getenv("OTP_DEBUG_ECHO", "false").lower() == "true"
+OTP_SMS_TYPE = os.getenv("AWS_SMS_TYPE", "Transactional")
+OTP_SMS_SENDER_ID = os.getenv("AWS_SNS_SMS_SENDER_ID", "").strip()
+
+
+def _get_auth_jwt_secret() -> str:
+    secret = os.getenv("AUTH_JWT_SECRET", "").strip()
+    if secret:
+        return secret
+
+    # Development fallback. Set AUTH_JWT_SECRET in production.
+    logger.warning("auth_jwt_secret_missing_using_dev_fallback")
+    return "anora-dev-jwt-secret-change-me"
+
+
+def _normalize_phone_number(value: str) -> str:
+    normalized = value.strip().replace(" ", "")
+    if not PHONE_E164_REGEX.match(normalized):
+        raise ValueError("phone_number must be in E.164 format, e.g. +15551234567")
+    return normalized
+
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
+
+
+def _b64url_decode(value: str) -> bytes:
+    padding = "=" * ((4 - len(value) % 4) % 4)
+    return base64.urlsafe_b64decode(value + padding)
+
+
+def _jwt_sign(payload: dict[str, Any]) -> str:
+    header = {"alg": "HS256", "typ": "JWT"}
+    header_b64 = _b64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+    payload_b64 = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    signing_input = f"{header_b64}.{payload_b64}".encode("utf-8")
+    signature = hmac.new(
+        _get_auth_jwt_secret().encode("utf-8"),
+        signing_input,
+        hashlib.sha256,
+    ).digest()
+    return f"{header_b64}.{payload_b64}.{_b64url_encode(signature)}"
+
+
+def _jwt_decode_and_verify(token: str) -> dict[str, Any]:
+    try:
+        header_b64, payload_b64, signature_b64 = token.split(".")
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="Malformed bearer token") from exc
+
+    signing_input = f"{header_b64}.{payload_b64}".encode("utf-8")
+    expected_sig = hmac.new(
+        _get_auth_jwt_secret().encode("utf-8"),
+        signing_input,
+        hashlib.sha256,
+    ).digest()
+    provided_sig = _b64url_decode(signature_b64)
+    if not hmac.compare_digest(expected_sig, provided_sig):
+        raise HTTPException(status_code=401, detail="Invalid bearer token")
+
+    try:
+        payload_raw = _b64url_decode(payload_b64)
+        payload = json.loads(payload_raw)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=401, detail="Invalid bearer token payload") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=401, detail="Invalid bearer token payload")
+
+    exp = payload.get("exp")
+    iss = payload.get("iss")
+    if not isinstance(exp, int) or exp < int(datetime.now(timezone.utc).timestamp()):
+        raise HTTPException(status_code=401, detail="Bearer token expired")
+    if iss != AUTH_JWT_ISSUER:
+        raise HTTPException(status_code=401, detail="Invalid token issuer")
+
+    return payload
+
+
+def _extract_bearer_token(request: Request) -> str:
+    auth_header = request.headers.get("Authorization", "").strip()
+    if not auth_header.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = auth_header[7:].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    return token
+
+
+def _require_auth_context(request: Request) -> dict[str, Any]:
+    token = _extract_bearer_token(request)
+    return _jwt_decode_and_verify(token)
+
+
+def _require_clinician_context(request: Request, clinician_id: str) -> dict[str, Any]:
+    claims = _require_auth_context(request)
+    if claims.get("role") != "clinician":
+        raise HTTPException(status_code=403, detail="Clinician role required")
+
+    token_clinician_id = str(claims.get("clinician_id") or "").strip()
+    requested_clinician_id = clinician_id.strip()
+    if not token_clinician_id or token_clinician_id != requested_clinician_id:
+        raise HTTPException(status_code=403, detail="Clinician identity mismatch")
+    return claims
+
+
+def _require_patient_context(request: Request, patient_device_id: str) -> dict[str, Any]:
+    claims = _require_auth_context(request)
+    if claims.get("role") != "patient":
+        raise HTTPException(status_code=403, detail="Patient role required")
+
+    token_patient_device_id = str(claims.get("patient_device_id") or "").strip()
+    requested_patient_device_id = patient_device_id.strip()
+    if not token_patient_device_id or token_patient_device_id != requested_patient_device_id:
+        raise HTTPException(status_code=403, detail="Patient identity mismatch")
+    return claims
+
+
+def _hash_otp_code(phone_number: str, code: str) -> str:
+    material = f"{phone_number}:{code}".encode("utf-8")
+    digest = hmac.new(
+        _get_auth_jwt_secret().encode("utf-8"),
+        material,
+        hashlib.sha256,
+    ).hexdigest()
+    return digest
+
+
+def _send_sms_otp(phone_number: str, otp_code: str) -> None:
+    sns_client = _get_sns_client()
+    if sns_client is None:
+        logger.warning("otp_sms_skipped_missing_sns_client phone=%s", phone_number)
+        if not OTP_DEBUG_ECHO:
+            raise HTTPException(
+                status_code=503,
+                detail="OTP SMS delivery is unavailable. Configure AWS_REGION and SNS permissions.",
+            )
+        return
+
+    message = f"Your Anora verification code is: {otp_code}. It expires in {max(1, OTP_TTL_SECONDS // 60)} minute(s)."
+    message_attributes = {
+        "AWS.SNS.SMS.SMSType": {
+            "DataType": "String",
+            "StringValue": OTP_SMS_TYPE,
+        }
+    }
+    if OTP_SMS_SENDER_ID:
+        message_attributes["AWS.SNS.SMS.SenderID"] = {
+            "DataType": "String",
+            "StringValue": OTP_SMS_SENDER_ID,
+        }
+
+    try:
+        sns_client.publish(
+            PhoneNumber=phone_number,
+            Message=message,
+            MessageAttributes=message_attributes,
+        )
+    except ClientError as exc:
+        logger.exception("otp_sms_send_failed phone=%s", phone_number)
+        raise HTTPException(status_code=502, detail="Failed to send OTP SMS") from exc
 
 
 def get_connection() -> psycopg2.extensions.connection:
@@ -397,6 +568,56 @@ def ensure_tables() -> None:
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_invite_code ON clinician_invite_codes (code);"
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_users (
+                  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                  phone_number TEXT NOT NULL UNIQUE,
+                  role TEXT NOT NULL CHECK (role IN ('patient', 'clinician')),
+                  clinician_id TEXT,
+                  patient_device_id TEXT,
+                  created_at TIMESTAMPTZ DEFAULT NOW(),
+                  updated_at TIMESTAMPTZ DEFAULT NOW(),
+                  last_login_at TIMESTAMPTZ
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_app_users_clinician_id_unique
+                ON app_users (clinician_id)
+                WHERE clinician_id IS NOT NULL;
+                """
+            )
+            cursor.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_app_users_patient_device_id_unique
+                ON app_users (patient_device_id)
+                WHERE patient_device_id IS NOT NULL;
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS otp_challenges (
+                  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                  phone_number TEXT NOT NULL,
+                  role TEXT NOT NULL CHECK (role IN ('patient', 'clinician')),
+                  clinician_id TEXT,
+                  patient_device_id TEXT,
+                  otp_hash TEXT NOT NULL,
+                  expires_at TIMESTAMPTZ NOT NULL,
+                  attempts_remaining INTEGER NOT NULL DEFAULT 5,
+                  consumed_at TIMESTAMPTZ,
+                  created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_otp_challenges_phone_created
+                ON otp_challenges (phone_number, created_at DESC);
+                """
+            )
 
     # Initialize FL tables
     ensure_fl_tables(connection)
@@ -534,6 +755,54 @@ class PatientLinkRequest(BaseModel):
         return stripped
 
 
+class OTPStartRequest(BaseModel):
+    phone_number: str = Field(min_length=8, max_length=16)
+    role: str = Field(min_length=6, max_length=9)
+    clinician_id: str | None = None
+    patient_device_id: str | None = None
+
+    @field_validator("phone_number")
+    @classmethod
+    def validate_phone_number(cls, value: str) -> str:
+        normalized = _normalize_phone_number(value)
+        return normalized
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"patient", "clinician"}:
+            raise ValueError("role must be either 'patient' or 'clinician'")
+        return normalized
+
+    @field_validator("clinician_id", "patient_device_id")
+    @classmethod
+    def validate_optional_ids(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None
+
+
+class OTPVerifyRequest(BaseModel):
+    challenge_id: str = Field(min_length=1)
+    phone_number: str = Field(min_length=8, max_length=16)
+    otp_code: str = Field(min_length=6, max_length=6)
+
+    @field_validator("phone_number")
+    @classmethod
+    def validate_phone_number(cls, value: str) -> str:
+        return _normalize_phone_number(value)
+
+    @field_validator("otp_code")
+    @classmethod
+    def validate_otp_code(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized.isdigit():
+            raise ValueError("otp_code must be numeric")
+        return normalized
+
+
 class SecurePayloadUpload(BaseModel):
     patient_device_id: str = Field(min_length=1)
     clinician_id: str = Field(min_length=1)
@@ -626,8 +895,262 @@ class ClinicianSignalUpload(SecurePayloadUpload):
         return trimmed
 
 
+def _issue_access_token(
+    *,
+    user_id: str,
+    phone_number: str,
+    role: str,
+    clinician_id: str | None,
+    patient_device_id: str | None,
+) -> tuple[str, datetime]:
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=AUTH_JWT_EXP_SECONDS)
+    claims: dict[str, Any] = {
+        "iss": AUTH_JWT_ISSUER,
+        "sub": user_id,
+        "phone_number": phone_number,
+        "role": role,
+        "iat": int(now.timestamp()),
+        "exp": int(expires_at.timestamp()),
+        "jti": secrets.token_urlsafe(18),
+    }
+    if clinician_id:
+        claims["clinician_id"] = clinician_id
+    if patient_device_id:
+        claims["patient_device_id"] = patient_device_id
+
+    return _jwt_sign(claims), expires_at
+
+
+def _upsert_auth_user(
+    *,
+    phone_number: str,
+    role: str,
+    clinician_id: str | None,
+    patient_device_id: str | None,
+) -> dict[str, Any]:
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT id, role, clinician_id, patient_device_id
+                FROM app_users
+                WHERE phone_number = %s;
+                """,
+                (phone_number,),
+            )
+            existing = cursor.fetchone()
+            if existing is not None:
+                existing_role = str(existing.get("role") or "").strip().lower()
+                if existing_role and existing_role != role:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Phone number already registered to a different role",
+                    )
+
+            cursor.execute(
+                """
+                INSERT INTO app_users (
+                  phone_number,
+                  role,
+                  clinician_id,
+                  patient_device_id,
+                  updated_at,
+                  last_login_at
+                )
+                VALUES (%s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (phone_number)
+                DO UPDATE SET
+                  role = EXCLUDED.role,
+                  clinician_id = COALESCE(EXCLUDED.clinician_id, app_users.clinician_id),
+                  patient_device_id = COALESCE(EXCLUDED.patient_device_id, app_users.patient_device_id),
+                  updated_at = NOW(),
+                  last_login_at = NOW()
+                RETURNING id, phone_number, role, clinician_id, patient_device_id;
+                """,
+                (
+                    phone_number,
+                    role,
+                    clinician_id,
+                    patient_device_id,
+                ),
+            )
+            row = cursor.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=500, detail="Failed to persist user session")
+    return dict(row)
+
+
+@app.post("/auth/otp/start")
+def start_phone_otp(payload: OTPStartRequest) -> dict[str, Any]:
+    phone_number = payload.phone_number
+    role = payload.role
+    clinician_id = payload.clinician_id
+    patient_device_id = payload.patient_device_id
+
+    if role == "clinician" and (clinician_id is None or clinician_id.strip() == ""):
+        raise HTTPException(status_code=422, detail="clinician_id is required for clinician auth")
+    if role == "patient" and (patient_device_id is None or patient_device_id.strip() == ""):
+        raise HTTPException(status_code=422, detail="patient_device_id is required for patient auth")
+
+    otp_code = f"{random.randint(0, 999999):06d}"
+    otp_hash = _hash_otp_code(phone_number, otp_code)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=OTP_TTL_SECONDS)
+
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO otp_challenges (
+                  phone_number,
+                  role,
+                  clinician_id,
+                  patient_device_id,
+                  otp_hash,
+                  expires_at,
+                  attempts_remaining
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id;
+                """,
+                (
+                    phone_number,
+                    role,
+                    clinician_id,
+                    patient_device_id,
+                    otp_hash,
+                    expires_at,
+                    OTP_MAX_ATTEMPTS,
+                ),
+            )
+            row = cursor.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=500, detail="Failed to create OTP challenge")
+
+    _send_sms_otp(phone_number, otp_code)
+
+    response: dict[str, Any] = {
+        "challenge_id": str(row["id"]),
+        "expires_in_seconds": OTP_TTL_SECONDS,
+    }
+    if OTP_DEBUG_ECHO:
+        response["debug_otp"] = otp_code
+    return response
+
+
+@app.post("/auth/otp/verify")
+def verify_phone_otp(payload: OTPVerifyRequest) -> dict[str, Any]:
+    challenge_id = payload.challenge_id.strip()
+    phone_number = payload.phone_number
+    otp_code = payload.otp_code
+
+    now = datetime.now(timezone.utc)
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                  id,
+                  phone_number,
+                  role,
+                  clinician_id,
+                  patient_device_id,
+                  otp_hash,
+                  expires_at,
+                  attempts_remaining,
+                  consumed_at
+                FROM otp_challenges
+                WHERE id = %s AND phone_number = %s;
+                """,
+                (challenge_id, phone_number),
+            )
+            challenge = cursor.fetchone()
+
+            if challenge is None:
+                raise HTTPException(status_code=404, detail="OTP challenge not found")
+            if challenge.get("consumed_at") is not None:
+                raise HTTPException(status_code=410, detail="OTP challenge already used")
+            expires_at = challenge.get("expires_at")
+            if isinstance(expires_at, datetime) and expires_at < now:
+                raise HTTPException(status_code=410, detail="OTP challenge expired")
+
+            attempts_remaining = int(challenge.get("attempts_remaining") or 0)
+            if attempts_remaining <= 0:
+                raise HTTPException(status_code=429, detail="Too many OTP attempts")
+
+            expected_hash = str(challenge.get("otp_hash") or "")
+            actual_hash = _hash_otp_code(phone_number, otp_code)
+            if not hmac.compare_digest(expected_hash, actual_hash):
+                cursor.execute(
+                    """
+                    UPDATE otp_challenges
+                    SET attempts_remaining = GREATEST(attempts_remaining - 1, 0)
+                    WHERE id = %s;
+                    """,
+                    (challenge_id,),
+                )
+                raise HTTPException(status_code=401, detail="Invalid OTP code")
+
+            cursor.execute(
+                """
+                UPDATE otp_challenges
+                SET consumed_at = NOW(), attempts_remaining = GREATEST(attempts_remaining - 1, 0)
+                WHERE id = %s;
+                """,
+                (challenge_id,),
+            )
+
+    role = str(challenge.get("role") or "")
+    clinician_id = challenge.get("clinician_id")
+    patient_device_id = challenge.get("patient_device_id")
+
+    user_row = _upsert_auth_user(
+        phone_number=phone_number,
+        role=role,
+        clinician_id=clinician_id,
+        patient_device_id=patient_device_id,
+    )
+
+    access_token, token_expires_at = _issue_access_token(
+        user_id=str(user_row["id"]),
+        phone_number=str(user_row["phone_number"]),
+        role=str(user_row["role"]),
+        clinician_id=(str(user_row.get("clinician_id")) if user_row.get("clinician_id") else None),
+        patient_device_id=(str(user_row.get("patient_device_id")) if user_row.get("patient_device_id") else None),
+    )
+
+    return {
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_at": token_expires_at.isoformat(),
+        "user": {
+            "user_id": str(user_row["id"]),
+            "phone_number": str(user_row["phone_number"]),
+            "role": str(user_row["role"]),
+            "clinician_id": user_row.get("clinician_id"),
+            "patient_device_id": user_row.get("patient_device_id"),
+        },
+    }
+
+
+@app.get("/auth/me")
+def auth_me(request: Request) -> dict[str, Any]:
+    claims = _require_auth_context(request)
+    return {
+        "user_id": claims.get("sub"),
+        "phone_number": claims.get("phone_number"),
+        "role": claims.get("role"),
+        "clinician_id": claims.get("clinician_id"),
+        "patient_device_id": claims.get("patient_device_id"),
+        "expires_at": claims.get("exp"),
+    }
+
+
 @app.post("/clinicians/register", status_code=201)
-def register_clinician(payload: ClinicianRegistration) -> dict[str, str]:
+def register_clinician(payload: ClinicianRegistration, request: Request) -> dict[str, str]:
+    _require_clinician_context(request, payload.clinician_id)
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -646,7 +1169,9 @@ def register_clinician(payload: ClinicianRegistration) -> dict[str, str]:
 @app.post("/clinicians/push-tokens", status_code=201)
 def register_clinician_push_token(
     payload: ClinicianPushTokenRegistration,
+    request: Request,
 ) -> dict[str, str]:
+    _require_clinician_context(request, payload.clinician_id)
     endpoint_arn = _create_or_refresh_sns_endpoint(
         clinician_id=payload.clinician_id,
         device_token=payload.device_token,
@@ -718,10 +1243,12 @@ def upload_report(payload: ReportUpload) -> dict[str, str]:
 
 @app.get("/reports/clinician/{clinician_id}")
 def list_reports_for_clinician(
+    request: Request,
     clinician_id: str,
     since: str | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
+    _require_clinician_context(request, clinician_id)
     safe_limit = max(1, min(int(limit), 200))
     cid = clinician_id.strip()
     if not cid:
@@ -773,7 +1300,8 @@ def list_reports_for_clinician(
 
 
 @app.post("/clinicians/link", status_code=201)
-def link_patient_to_clinician(payload: LinkRequest) -> dict[str, Any]:
+def link_patient_to_clinician(payload: LinkRequest, request: Request) -> dict[str, Any]:
+    _require_patient_context(request, payload.patient_device_id)
     with get_connection() as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
@@ -808,11 +1336,12 @@ def link_patient_to_clinician(payload: LinkRequest) -> dict[str, Any]:
 
 
 @app.post("/clinicians/generate-code", status_code=201)
-def generate_invite_code(payload: ClinicianIdPayload) -> dict[str, str]:
+def generate_invite_code(payload: ClinicianIdPayload, request: Request) -> dict[str, str]:
     """Generates a single-use invite code for a clinician."""
     clinician_id = payload.clinician_id.strip()
     if not clinician_id:
         raise HTTPException(status_code=422, detail="clinician_id is required")
+    _require_clinician_context(request, clinician_id)
 
     with get_connection() as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -841,8 +1370,9 @@ def generate_invite_code(payload: ClinicianIdPayload) -> dict[str, str]:
 
 
 @app.post("/patients/link-with-code", status_code=201)
-def link_patient_with_invite_code(payload: PatientLinkRequest) -> dict[str, Any]:
+def link_patient_with_invite_code(payload: PatientLinkRequest, request: Request) -> dict[str, Any]:
     """Links a patient to a clinician using a single-use invite code."""
+    _require_patient_context(request, payload.patient_device_id)
     invite_code = payload.invite_code.upper()
     with get_connection() as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -905,7 +1435,8 @@ def _store_secure_event(table_name: str, payload: SecurePayloadUpload) -> str:
 
 
 @app.post("/telemetry/mood-events", status_code=201)
-def upload_mood_event(payload: SecurePayloadUpload) -> dict[str, str]:
+def upload_mood_event(payload: SecurePayloadUpload, request: Request) -> dict[str, str]:
+    _require_patient_context(request, payload.patient_device_id)
     mood_summary = payload.mood_summary or {}
     mood_score_raw = mood_summary.get("mood_score")
     mood_score = float(mood_score_raw) if isinstance(mood_score_raw, (int, float)) else None
@@ -968,9 +1499,11 @@ def upload_mood_event(payload: SecurePayloadUpload) -> dict[str, str]:
 
 @app.get("/telemetry/mood-events/latest/{clinician_id}")
 def get_latest_mood_events(
+    request: Request,
     clinician_id: str,
     limit: int = 100,
 ) -> dict[str, list[dict[str, Any]]]:
+    _require_clinician_context(request, clinician_id)
     safe_limit = max(1, min(int(limit), 200))
     clinician_id_value = clinician_id.strip()
     if not clinician_id_value:
@@ -1047,11 +1580,13 @@ def get_latest_mood_events(
 
 @app.get("/clinician/{clinician_id}/feed")
 def get_clinician_feed(
+    request: Request,
     clinician_id: str,
     since: str | None = None,
     limit: int = 100,
 ) -> dict[str, list[dict[str, Any]]]:
     """Fetches a consolidated, chronological feed of events for a clinician."""
+    _require_clinician_context(request, clinician_id)
     safe_limit = max(1, min(int(limit), 500))
     clinician_id_value = clinician_id.strip()
     if not clinician_id_value:
@@ -1137,13 +1672,15 @@ def get_clinician_feed(
 
 
 @app.post("/entries/share", status_code=201)
-def share_entry_content(payload: SecurePayloadUpload) -> dict[str, str]:
+def share_entry_content(payload: SecurePayloadUpload, request: Request) -> dict[str, str]:
+    _require_patient_context(request, payload.patient_device_id)
     entry_id = _store_secure_event("shared_entries", payload)
     return {"entry_share_id": entry_id, "status": "stored"}
 
 
 @app.post("/clinician/signal", status_code=201)
-def upload_clinician_signal(payload: ClinicianSignalUpload) -> dict[str, str]:
+def upload_clinician_signal(payload: ClinicianSignalUpload, request: Request) -> dict[str, str]:
+    _require_patient_context(request, payload.patient_device_id)
     with get_connection() as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
@@ -1173,7 +1710,8 @@ def upload_clinician_signal(payload: ClinicianSignalUpload) -> dict[str, str]:
 
 
 @app.post("/alerts/emergency", status_code=201)
-def upload_emergency_alert(payload: SecurePayloadUpload) -> dict[str, str]:
+def upload_emergency_alert(payload: SecurePayloadUpload, request: Request) -> dict[str, str]:
+    _require_patient_context(request, payload.patient_device_id)
     with get_connection() as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
@@ -1211,10 +1749,12 @@ def upload_emergency_alert(payload: SecurePayloadUpload) -> dict[str, str]:
 
 @app.get("/alerts/emergency/{clinician_id}")
 def get_emergency_alerts(
+    request: Request,
     clinician_id: str,
     since: str | None = None,
     limit: int = 100,
 ) -> dict[str, list[dict[str, str]]]:
+    _require_clinician_context(request, clinician_id)
     query_parts = [
         "SELECT id, clinician_id, priority, created_at",
         "FROM emergency_alerts",
@@ -1263,8 +1803,12 @@ def get_emergency_alerts(
 
 
 @app.get("/reports/{report_id}")
-def get_report(report_id: str) -> dict[str, object]:
-    """MVP endpoint without authentication. TODO: Add clinician JWT auth before production."""
+def get_report(report_id: str, request: Request) -> dict[str, object]:
+    """Returns a clinician report after validating clinician bearer token access."""
+    claims = _require_auth_context(request)
+    if claims.get("role") != "clinician":
+        raise HTTPException(status_code=403, detail="Clinician role required")
+
     try:
         UUID(report_id)
     except ValueError as exc:
@@ -1296,6 +1840,11 @@ def get_report(report_id: str) -> dict[str, object]:
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found")
 
+    token_clinician_id = str(claims.get("clinician_id") or "").strip()
+    row_clinician_id = str(row.get("clinician_id") or "").strip()
+    if not token_clinician_id or token_clinician_id != row_clinician_id:
+        raise HTTPException(status_code=403, detail="Clinician identity mismatch")
+
     created_at = row["created_at"]
     if isinstance(created_at, datetime):
         created_at_iso = created_at.astimezone(timezone.utc).isoformat()
@@ -1312,11 +1861,12 @@ def get_report(report_id: str) -> dict[str, object]:
 
 
 @app.get("/patients/linked/{clinician_id}")
-def get_linked_patients(clinician_id: str) -> dict[str, Any]:
+def get_linked_patients(clinician_id: str, request: Request) -> dict[str, Any]:
     """
     Returns all patients linked to this clinician with their
     latest mood event joined via LATERAL subquery.
     """
+    _require_clinician_context(request, clinician_id)
     cid = clinician_id.strip()
     if not cid:
         raise HTTPException(status_code=422, detail="clinician_id required")

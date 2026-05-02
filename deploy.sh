@@ -20,6 +20,8 @@
 #                  --aws-account 027277540377 \
 #                  --aws-region us-east-1 \
 #                  --db-url "postgresql://..." \
+#                  --auth-jwt-secret "<strong-secret>" \
+#                  --runtime-role-arn "arn:aws:iam::<account-id>:role/<app-runner-runtime-role>" \
 #                  --docker-image anora-backend:latest
 #
 ###############################################################################
@@ -47,6 +49,16 @@ ECR_REPO_NAME="anora-backend"
 DOCKER_IMAGE="$ECR_REPO_NAME:latest"
 APP_RUNNER_SERVICE_NAME="anora-backend"
 
+# Production auth + OTP environment values (required for redeploy)
+AUTH_JWT_SECRET="${AUTH_JWT_SECRET:-}"
+AUTH_JWT_EXP_SECONDS="${AUTH_JWT_EXP_SECONDS:-86400}"
+OTP_TTL_SECONDS="${OTP_TTL_SECONDS:-300}"
+OTP_MAX_ATTEMPTS="${OTP_MAX_ATTEMPTS:-5}"
+OTP_DEBUG_ECHO="${OTP_DEBUG_ECHO:-false}"
+AWS_SMS_TYPE="${AWS_SMS_TYPE:-Transactional}"
+AWS_SNS_SMS_SENDER_ID="${AWS_SNS_SMS_SENDER_ID:-ANORA}"
+APP_RUNNER_RUNTIME_ROLE_ARN="${APP_RUNNER_RUNTIME_ROLE_ARN:-}"
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -54,20 +66,64 @@ while [[ $# -gt 0 ]]; do
     --aws-account) AWS_ACCOUNT="$2"; shift 2 ;;
     --aws-region) AWS_REGION="$2"; shift 2 ;;
     --db-url) DATABASE_URL="$2"; shift 2 ;;
+    --auth-jwt-secret) AUTH_JWT_SECRET="$2"; shift 2 ;;
+    --auth-jwt-exp-seconds) AUTH_JWT_EXP_SECONDS="$2"; shift 2 ;;
+    --otp-ttl-seconds) OTP_TTL_SECONDS="$2"; shift 2 ;;
+    --otp-max-attempts) OTP_MAX_ATTEMPTS="$2"; shift 2 ;;
+    --otp-debug-echo) OTP_DEBUG_ECHO="$2"; shift 2 ;;
+    --aws-sms-type) AWS_SMS_TYPE="$2"; shift 2 ;;
+    --aws-sns-sms-sender-id) AWS_SNS_SMS_SENDER_ID="$2"; shift 2 ;;
+    --runtime-role-arn) APP_RUNNER_RUNTIME_ROLE_ARN="$2"; shift 2 ;;
     --docker-image) DOCKER_IMAGE="$2"; shift 2 ;;
     --app-runner-arn) APP_RUNNER_ARN="$2"; shift 2 ;;
     *) log_error "Unknown option: $1"; exit 1 ;;
   esac
 done
 
+require_non_empty() {
+  local var_name="$1"
+  local help_hint="$2"
+  if [[ -z "${!var_name:-}" ]]; then
+    log_error "$var_name is required. $help_hint"
+    exit 1
+  fi
+}
+
+require_numeric() {
+  local var_name="$1"
+  local value="${!var_name:-}"
+  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+    log_error "$var_name must be a positive integer. Current value: $value"
+    exit 1
+  fi
+}
+
 # Validate required environment variables
-if [[ -z "${DATABASE_URL:-}" ]]; then
-  log_error "DATABASE_URL not set. Use --db-url or set environment variable."
-  exit 1
-fi
+require_non_empty "DATABASE_URL" "Use --db-url or set environment variable."
+require_non_empty "AUTH_JWT_SECRET" "Use --auth-jwt-secret or set AUTH_JWT_SECRET in CloudShell."
 
 if [[ -z "${AWS_ACCOUNT:-}" ]] || [[ -z "${AWS_REGION:-}" ]]; then
   log_error "AWS account/region not set. Use --aws-account and --aws-region."
+  exit 1
+fi
+
+require_numeric "AUTH_JWT_EXP_SECONDS"
+require_numeric "OTP_TTL_SECONDS"
+require_numeric "OTP_MAX_ATTEMPTS"
+
+OTP_DEBUG_ECHO="$(echo "$OTP_DEBUG_ECHO" | tr '[:upper:]' '[:lower:]')"
+if [[ "$OTP_DEBUG_ECHO" != "true" && "$OTP_DEBUG_ECHO" != "false" ]]; then
+  log_error "OTP_DEBUG_ECHO must be either true or false. Current value: $OTP_DEBUG_ECHO"
+  exit 1
+fi
+
+AWS_SMS_TYPE_LOWER="$(echo "$AWS_SMS_TYPE" | tr '[:upper:]' '[:lower:]')"
+if [[ "$AWS_SMS_TYPE_LOWER" == "transactional" ]]; then
+  AWS_SMS_TYPE="Transactional"
+elif [[ "$AWS_SMS_TYPE_LOWER" == "promotional" ]]; then
+  AWS_SMS_TYPE="Promotional"
+else
+  log_error "AWS_SMS_TYPE must be Transactional or Promotional. Current value: $AWS_SMS_TYPE"
   exit 1
 fi
 
@@ -81,6 +137,13 @@ log_info "AWS Region: $AWS_REGION"
 log_info "AWS Account: $AWS_ACCOUNT"
 log_info "ECR URI: $ECR_IMAGE_URI"
 log_info "App Runner Service: $APP_RUNNER_SERVICE_NAME"
+log_info "AUTH_JWT_SECRET: [configured]"
+log_info "AUTH_JWT_EXP_SECONDS: $AUTH_JWT_EXP_SECONDS"
+log_info "OTP_TTL_SECONDS: $OTP_TTL_SECONDS"
+log_info "OTP_MAX_ATTEMPTS: $OTP_MAX_ATTEMPTS"
+log_info "OTP_DEBUG_ECHO: $OTP_DEBUG_ECHO"
+log_info "AWS_SMS_TYPE: $AWS_SMS_TYPE"
+log_info "AWS_SNS_SMS_SENDER_ID: ${AWS_SNS_SMS_SENDER_ID:-<empty>}"
 
 ###############################################################################
 # Step 1: Clone or update repository
@@ -188,18 +251,208 @@ else
   SKIP_APP_RUNNER=false
 fi
 
+if [[ "$SKIP_APP_RUNNER" == "false" ]]; then
+  if [[ -z "$APP_RUNNER_RUNTIME_ROLE_ARN" ]]; then
+    APP_RUNNER_RUNTIME_ROLE_ARN=$(aws apprunner describe-service \
+      --service-arn "$APP_RUNNER_ARN" \
+      --region "$AWS_REGION" \
+      --query 'Service.InstanceConfiguration.InstanceRoleArn' \
+      --output text 2>/dev/null || echo "")
+
+    if [[ "$APP_RUNNER_RUNTIME_ROLE_ARN" == "None" ]]; then
+      APP_RUNNER_RUNTIME_ROLE_ARN=""
+    fi
+  fi
+
+  if [[ -z "$APP_RUNNER_RUNTIME_ROLE_ARN" ]]; then
+    log_error "App Runner runtime role ARN is required for OTP SMS. Set APP_RUNNER_RUNTIME_ROLE_ARN or pass --runtime-role-arn."
+    exit 1
+  fi
+
+  log_info "Validating SNS publish permissions for runtime role..."
+  SNS_PUBLISH_DECISION=$(aws iam simulate-principal-policy \
+    --policy-source-arn "$APP_RUNNER_RUNTIME_ROLE_ARN" \
+    --action-names sns:Publish \
+    --resource-arns "*" \
+    --query 'EvaluationResults[0].EvalDecision' \
+    --output text 2>/dev/null || echo "ERROR")
+
+  if [[ "$SNS_PUBLISH_DECISION" != "allowed" && "$SNS_PUBLISH_DECISION" != "Allowed" ]]; then
+    if [[ "$SNS_PUBLISH_DECISION" == "ERROR" ]]; then
+      log_error "Could not validate sns:Publish on runtime role. Ensure deploy identity has iam:SimulatePrincipalPolicy."
+    else
+      log_error "Runtime role is missing sns:Publish permission (decision: $SNS_PUBLISH_DECISION)."
+    fi
+    log_info "Attach policy with sns:Publish to role: $APP_RUNNER_RUNTIME_ROLE_ARN"
+    exit 1
+  fi
+
+  log_success "Runtime role can publish OTP SMS via SNS"
+fi
+
 ###############################################################################
 # Step 5: Deploy to App Runner (if service exists)
 ###############################################################################
 
 if [[ "$SKIP_APP_RUNNER" == "false" ]]; then
   log_info "\n=== Step 5: Deploy to App Runner ==="
+
+  CURRENT_ENV_VARS_JSON=$(aws apprunner describe-service \
+    --service-arn "$APP_RUNNER_ARN" \
+    --region "$AWS_REGION" \
+    --query 'Service.SourceConfiguration.ImageRepository.ImageConfiguration.RuntimeEnvironmentVariables' \
+    --output json 2>/dev/null || echo "{}")
+
+  if [[ -z "$CURRENT_ENV_VARS_JSON" || "$CURRENT_ENV_VARS_JSON" == "None" || "$CURRENT_ENV_VARS_JSON" == "null" ]]; then
+    CURRENT_ENV_VARS_JSON="{}"
+  fi
+
+  CURRENT_ENV_SECRETS_JSON=$(aws apprunner describe-service \
+    --service-arn "$APP_RUNNER_ARN" \
+    --region "$AWS_REGION" \
+    --query 'Service.SourceConfiguration.ImageRepository.ImageConfiguration.RuntimeEnvironmentSecrets' \
+    --output json 2>/dev/null || echo "{}")
+
+  if [[ -z "$CURRENT_ENV_SECRETS_JSON" || "$CURRENT_ENV_SECRETS_JSON" == "None" || "$CURRENT_ENV_SECRETS_JSON" == "null" ]]; then
+    CURRENT_ENV_SECRETS_JSON="{}"
+  fi
+
+  CURRENT_PORT=$(aws apprunner describe-service \
+    --service-arn "$APP_RUNNER_ARN" \
+    --region "$AWS_REGION" \
+    --query 'Service.SourceConfiguration.ImageRepository.ImageConfiguration.Port' \
+    --output text 2>/dev/null || echo "8000")
+
+  if [[ -z "$CURRENT_PORT" || "$CURRENT_PORT" == "None" ]]; then
+    CURRENT_PORT="8000"
+  fi
+
+  CURRENT_ACCESS_ROLE_ARN=$(aws apprunner describe-service \
+    --service-arn "$APP_RUNNER_ARN" \
+    --region "$AWS_REGION" \
+    --query 'Service.SourceConfiguration.AuthenticationConfiguration.AccessRoleArn' \
+    --output text 2>/dev/null || echo "")
+
+  if [[ "$CURRENT_ACCESS_ROLE_ARN" == "None" ]]; then
+    CURRENT_ACCESS_ROLE_ARN=""
+  fi
+
+  CURRENT_AUTO_DEPLOYMENTS_ENABLED=$(aws apprunner describe-service \
+    --service-arn "$APP_RUNNER_ARN" \
+    --region "$AWS_REGION" \
+    --query 'Service.SourceConfiguration.AutoDeploymentsEnabled' \
+    --output text 2>/dev/null || echo "false")
+
+  if [[ "$CURRENT_AUTO_DEPLOYMENTS_ENABLED" == "None" ]]; then
+    CURRENT_AUTO_DEPLOYMENTS_ENABLED="false"
+  fi
+
+  CURRENT_CPU=$(aws apprunner describe-service \
+    --service-arn "$APP_RUNNER_ARN" \
+    --region "$AWS_REGION" \
+    --query 'Service.InstanceConfiguration.Cpu' \
+    --output text 2>/dev/null || echo "")
+
+  if [[ "$CURRENT_CPU" == "None" ]]; then
+    CURRENT_CPU=""
+  fi
+
+  CURRENT_MEMORY=$(aws apprunner describe-service \
+    --service-arn "$APP_RUNNER_ARN" \
+    --region "$AWS_REGION" \
+    --query 'Service.InstanceConfiguration.Memory' \
+    --output text 2>/dev/null || echo "")
+
+  if [[ "$CURRENT_MEMORY" == "None" ]]; then
+    CURRENT_MEMORY=""
+  fi
+
+  SOURCE_CONFIGURATION_JSON=$(CURRENT_ENV_VARS_JSON="$CURRENT_ENV_VARS_JSON" \
+    CURRENT_ENV_SECRETS_JSON="$CURRENT_ENV_SECRETS_JSON" \
+    CURRENT_ACCESS_ROLE_ARN="$CURRENT_ACCESS_ROLE_ARN" \
+    CURRENT_AUTO_DEPLOYMENTS_ENABLED="$CURRENT_AUTO_DEPLOYMENTS_ENABLED" \
+    CURRENT_PORT="$CURRENT_PORT" \
+    ECR_IMAGE_URI="$ECR_IMAGE_URI" \
+    DATABASE_URL="$DATABASE_URL" \
+    AWS_REGION="$AWS_REGION" \
+    AUTH_JWT_SECRET="$AUTH_JWT_SECRET" \
+    AUTH_JWT_EXP_SECONDS="$AUTH_JWT_EXP_SECONDS" \
+    OTP_TTL_SECONDS="$OTP_TTL_SECONDS" \
+    OTP_MAX_ATTEMPTS="$OTP_MAX_ATTEMPTS" \
+    OTP_DEBUG_ECHO="$OTP_DEBUG_ECHO" \
+    AWS_SMS_TYPE="$AWS_SMS_TYPE" \
+    AWS_SNS_SMS_SENDER_ID="$AWS_SNS_SMS_SENDER_ID" \
+    python3 - <<'PY'
+import json
+import os
+
+def parse_json_env(name, default):
+    raw = os.getenv(name, "")
+    if not raw or raw in {"None", "null"}:
+        return default
+    try:
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else default
+    except json.JSONDecodeError:
+        return default
+
+runtime_env = parse_json_env("CURRENT_ENV_VARS_JSON", {})
+runtime_secrets = parse_json_env("CURRENT_ENV_SECRETS_JSON", {})
+
+runtime_env.update(
+    {
+        "DATABASE_URL": os.getenv("DATABASE_URL", ""),
+        "AWS_REGION": os.getenv("AWS_REGION", ""),
+        "AUTH_JWT_SECRET": os.getenv("AUTH_JWT_SECRET", ""),
+        "AUTH_JWT_EXP_SECONDS": os.getenv("AUTH_JWT_EXP_SECONDS", ""),
+        "OTP_TTL_SECONDS": os.getenv("OTP_TTL_SECONDS", ""),
+        "OTP_MAX_ATTEMPTS": os.getenv("OTP_MAX_ATTEMPTS", ""),
+        "OTP_DEBUG_ECHO": os.getenv("OTP_DEBUG_ECHO", ""),
+        "AWS_SMS_TYPE": os.getenv("AWS_SMS_TYPE", ""),
+        "AWS_SNS_SMS_SENDER_ID": os.getenv("AWS_SNS_SMS_SENDER_ID", ""),
+    }
+)
+
+source_configuration = {
+    "ImageRepository": {
+        "ImageIdentifier": os.getenv("ECR_IMAGE_URI", ""),
+        "ImageRepositoryType": "ECR",
+        "ImageConfiguration": {
+            "Port": os.getenv("CURRENT_PORT", "8000"),
+            "RuntimeEnvironmentVariables": runtime_env,
+        },
+    }
+}
+
+if runtime_secrets:
+    source_configuration["ImageRepository"]["ImageConfiguration"]["RuntimeEnvironmentSecrets"] = runtime_secrets
+
+access_role_arn = os.getenv("CURRENT_ACCESS_ROLE_ARN", "").strip()
+if access_role_arn:
+    source_configuration["AuthenticationConfiguration"] = {"AccessRoleArn": access_role_arn}
+
+auto_deploy = os.getenv("CURRENT_AUTO_DEPLOYMENTS_ENABLED", "false").strip().lower()
+if auto_deploy in {"true", "false"}:
+    source_configuration["AutoDeploymentsEnabled"] = auto_deploy == "true"
+
+print(json.dumps(source_configuration, separators=(",", ":")))
+PY
+  )
+
+  INSTANCE_CONFIGURATION="InstanceRoleArn=$APP_RUNNER_RUNTIME_ROLE_ARN"
+  if [[ -n "$CURRENT_CPU" ]]; then
+    INSTANCE_CONFIGURATION="$INSTANCE_CONFIGURATION,Cpu=$CURRENT_CPU"
+  fi
+  if [[ -n "$CURRENT_MEMORY" ]]; then
+    INSTANCE_CONFIGURATION="$INSTANCE_CONFIGURATION,Memory=$CURRENT_MEMORY"
+  fi
   
   log_info "Updating App Runner service with new image..."
   aws apprunner update-service \
     --service-arn "$APP_RUNNER_ARN" \
     --region "$AWS_REGION" \
-    --source-configuration "ImageRepository={ImageIdentifier=$ECR_IMAGE_URI,ImageRepositoryType=ECR,ImageConfiguration={Port=8000,RuntimeEnvironmentVariables={DATABASE_URL=$DATABASE_URL}}}"
+    --source-configuration "$SOURCE_CONFIGURATION_JSON" \
+    --instance-configuration "$INSTANCE_CONFIGURATION"
   
   log_success "App Runner deployment initiated"
   log_info "Waiting for deployment to complete (this may take 5-10 minutes)..."

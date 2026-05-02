@@ -292,6 +292,15 @@ Anora backend is deployed on **AWS App Runner** (as of May 2026), backed by a ma
 **Critical (Hard Failures if Missing):**
 - `DATABASE_URL` - PostgreSQL connection string (no default)
 - `AWS_REGION` - Required for SNS notifications (no default)
+- `AUTH_JWT_SECRET` - Signing secret for backend-issued auth tokens
+
+**Required for OTP/Auth Runtime Configuration:**
+- `AUTH_JWT_EXP_SECONDS` - Access token TTL in seconds (recommended: `86400`)
+- `OTP_TTL_SECONDS` - OTP validity window in seconds (recommended: `300`)
+- `OTP_MAX_ATTEMPTS` - Max OTP verification attempts per challenge (recommended: `5`)
+- `OTP_DEBUG_ECHO` - Must be `false` in production
+- `AWS_SMS_TYPE` - `Transactional` for OTP delivery
+- `AWS_SNS_SMS_SENDER_ID` - Sender ID (country/carrier dependent)
 
 **Optional but Recommended:**
 - `ALLOWED_ORIGINS` - CORS whitelist (default: `https://d1p1fpleu1yzws.cloudfront.net`)
@@ -320,8 +329,19 @@ See `backend/.env.production.template` for complete reference with descriptions.
 3. **Deploy to App Runner:**
    Update the App Runner service with the new image:
    ```bash
+   # Runtime role must allow sns:Publish for OTP SMS
+   aws iam simulate-principal-policy \
+     --policy-source-arn "$APP_RUNNER_RUNTIME_ROLE_ARN" \
+     --action-names sns:Publish \
+     --resource-arns "*" \
+     --query 'EvaluationResults[0].EvalDecision' \
+     --output text
+
+   # Expected output: allowed
+
    aws apprunner update-service --service-arn <your-service-arn> \
-     --source-configuration ImageRepository={ImageIdentifier=027277540377.dkr.ecr.us-east-1.amazonaws.com/anora-backend:latest}
+     --source-configuration "ImageRepository={ImageIdentifier=027277540377.dkr.ecr.us-east-1.amazonaws.com/anora-backend:latest,ImageRepositoryType=ECR,ImageConfiguration={Port=8000,RuntimeEnvironmentVariables={DATABASE_URL=$DATABASE_URL,AWS_REGION=$AWS_REGION,AUTH_JWT_SECRET=$AUTH_JWT_SECRET,AUTH_JWT_EXP_SECONDS=$AUTH_JWT_EXP_SECONDS,OTP_TTL_SECONDS=$OTP_TTL_SECONDS,OTP_MAX_ATTEMPTS=$OTP_MAX_ATTEMPTS,OTP_DEBUG_ECHO=$OTP_DEBUG_ECHO,AWS_SMS_TYPE=$AWS_SMS_TYPE,AWS_SNS_SMS_SENDER_ID=$AWS_SNS_SMS_SENDER_ID}}}" \
+     --instance-configuration "InstanceRoleArn=$APP_RUNNER_RUNTIME_ROLE_ARN"
    ```
 
 4. **Verify Health:**

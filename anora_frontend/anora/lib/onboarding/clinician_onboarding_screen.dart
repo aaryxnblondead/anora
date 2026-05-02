@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../clinician/clinician_shell.dart';
+import '../models/user_role.dart';
 import '../services/clinician_crypto_service.dart';
+import '../services/phone_otp_auth_service.dart';
 import '../services/secure_link_service.dart';
 import '../services/storage_service.dart';
 import '../theme/anora_theme.dart';
@@ -21,6 +23,8 @@ class _ClinicianOnboardingScreenState extends State<ClinicianOnboardingScreen> {
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _credentialsController = TextEditingController();
   final TextEditingController _importPrivateKeyController = TextEditingController();
+  final TextEditingController _phoneController = TextEditingController();
+  final TextEditingController _otpController = TextEditingController();
 
   final Map<String, String> _formData = <String, String>{};
 
@@ -29,6 +33,9 @@ class _ClinicianOnboardingScreenState extends State<ClinicianOnboardingScreen> {
   bool _showImportField = false;
   String? _publicKeyPem;
   String? _clinicianId;
+  String? _otpChallengeId;
+  bool _otpSent = false;
+  bool _phoneVerified = false;
 
   @override
   void initState() {
@@ -37,6 +44,13 @@ class _ClinicianOnboardingScreenState extends State<ClinicianOnboardingScreen> {
     _nameController.text = (box.get('clinician_name') as String?) ?? '';
     _credentialsController.text = (box.get('clinician_credentials') as String?) ?? '';
     _publicKeyPem = ClinicianCryptoService.instance.getPublicKeyPem();
+
+    final session = PhoneOtpAuthService.instance.readSession();
+    if (session != null && session.role == UserRole.clinician && !session.isExpired) {
+      _phoneController.text = session.phoneNumber;
+      _phoneVerified = true;
+      _otpSent = true;
+    }
   }
 
   @override
@@ -45,6 +59,8 @@ class _ClinicianOnboardingScreenState extends State<ClinicianOnboardingScreen> {
     _nameController.dispose();
     _credentialsController.dispose();
     _importPrivateKeyController.dispose();
+    _phoneController.dispose();
+    _otpController.dispose();
     super.dispose();
   }
 
@@ -138,11 +154,103 @@ class _ClinicianOnboardingScreenState extends State<ClinicianOnboardingScreen> {
     setState(() => _clinicianId = generated);
   }
 
+  Future<void> _requestOtp() async {
+    if (_isBusy) return;
+    final clinicianId = _clinicianId;
+    if (clinicianId == null || clinicianId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Clinician ID is not ready yet.')),
+      );
+      return;
+    }
+
+    setState(() => _isBusy = true);
+    try {
+      final challengeId = await PhoneOtpAuthService.instance.requestOtp(
+        phoneNumber: _phoneController.text,
+        role: UserRole.clinician,
+        clinicianId: clinicianId,
+      );
+      if (!mounted) return;
+      setState(() {
+        _otpChallengeId = challengeId;
+        _otpSent = true;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('OTP sent to your phone.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not send OTP: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isBusy = false);
+      }
+    }
+  }
+
+  Future<void> _verifyOtp() async {
+    if (_isBusy) return;
+    final challengeId = _otpChallengeId;
+    if (challengeId == null || challengeId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Request OTP first.')),
+      );
+      return;
+    }
+
+    setState(() => _isBusy = true);
+    try {
+      final session = await PhoneOtpAuthService.instance.verifyOtp(
+        challengeId: challengeId,
+        phoneNumber: _phoneController.text,
+        otpCode: _otpController.text,
+      );
+      if (!mounted) return;
+      if (session.role != UserRole.clinician) {
+        throw Exception('This phone is not registered as a clinician account.');
+      }
+      final clinicianId = _clinicianId;
+      if (clinicianId != null && clinicianId.isNotEmpty && session.clinicianId != clinicianId) {
+        throw Exception('Authenticated clinician identity does not match this clinician ID.');
+      }
+
+      setState(() => _phoneVerified = true);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Phone verified successfully.')),
+      );
+      await _nextPage();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('OTP verification failed: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isBusy = false);
+      }
+    }
+  }
+
   Future<void> _completeOnboarding() async {
     try {
-      final clinicianId = _clinicianId;
+      final clinicianId = (_clinicianId ?? '').trim();
+      if (clinicianId.isEmpty) {
+        throw Exception('Clinician ID is missing.');
+      }
+
+      if (!_phoneVerified ||
+          !PhoneOtpAuthService.instance.hasValidSessionForRole(
+            UserRole.clinician,
+            clinicianId: clinicianId,
+          )) {
+        throw Exception('Complete phone OTP verification before continuing.');
+      }
+
       final publicKeyPem = _publicKeyPem;
-      if (clinicianId != null && clinicianId.isNotEmpty && publicKeyPem != null) {
+      if (publicKeyPem != null) {
         try {
           await SecureLinkService.instance.registerClinicianConnection(
             clinicianId: clinicianId,
@@ -158,7 +266,7 @@ class _ClinicianOnboardingScreenState extends State<ClinicianOnboardingScreen> {
       }
       await StorageService.instance.settingsBox.put('clinician_onboarding_complete', true);
 
-      if (!mounted || clinicianId == null || clinicianId.isEmpty) {
+      if (!mounted) {
         return;
       }
 
@@ -238,6 +346,16 @@ class _ClinicianOnboardingScreenState extends State<ClinicianOnboardingScreen> {
                       },
                       onNext: _nextPage,
                     ),
+                    _PhoneOtpStep(
+                      phoneController: _phoneController,
+                      otpController: _otpController,
+                      isBusy: _isBusy,
+                      otpSent: _otpSent,
+                      phoneVerified: _phoneVerified,
+                      onRequestOtp: _requestOtp,
+                      onVerifyOtp: _verifyOtp,
+                      onNext: _nextPage,
+                    ),
                     _ReadyStep(onFinish: _completeOnboarding),
                   ],
                 ),
@@ -262,7 +380,7 @@ class _StepDots extends StatelessWidget {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: List.generate(
-        4,
+        5,
         (index) => AnimatedContainer(
           duration: AnoraMotion.quick,
           width: currentIndex == index ? (layout.isCompact ? 16 : 18) : 8,
@@ -504,6 +622,102 @@ class _ClinicianIdStep extends StatelessWidget {
   }
 }
 
+class _PhoneOtpStep extends StatelessWidget {
+  const _PhoneOtpStep({
+    required this.phoneController,
+    required this.otpController,
+    required this.isBusy,
+    required this.otpSent,
+    required this.phoneVerified,
+    required this.onRequestOtp,
+    required this.onVerifyOtp,
+    required this.onNext,
+  });
+
+  final TextEditingController phoneController;
+  final TextEditingController otpController;
+  final bool isBusy;
+  final bool otpSent;
+  final bool phoneVerified;
+  final Future<void> Function() onRequestOtp;
+  final Future<void> Function() onVerifyOtp;
+  final Future<void> Function() onNext;
+
+  @override
+  Widget build(BuildContext context) {
+    final layout = AnoraLayoutSpec.of(context);
+    return Padding(
+      padding: layout.screenPadding(top: layout.minorGap, bottom: layout.bottomPadding - 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const AnoraScreenHeader(
+            title: 'Phone Verification',
+            subtitle: 'Authenticate your clinician account with phone OTP using AWS SMS.',
+          ),
+          SizedBox(height: layout.sectionGap),
+          AnoraSectionCard(
+            child: Column(
+              children: [
+                TextField(
+                  controller: phoneController,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(
+                    labelText: 'Phone number',
+                    hintText: '+15551234567',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: otpController,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(
+                    labelText: 'OTP code',
+                    hintText: otpSent ? 'Enter 6-digit code' : 'Request OTP first',
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: isBusy ? null : onRequestOtp,
+                        child: Text(isBusy && !otpSent ? 'Sending...' : 'Send OTP'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton.tonal(
+                        onPressed: (isBusy || !otpSent) ? null : onVerifyOtp,
+                        child: Text(isBusy && otpSent ? 'Verifying...' : 'Verify OTP'),
+                      ),
+                    ),
+                  ],
+                ),
+                if (phoneVerified) ...[
+                  const SizedBox(height: 10),
+                  Row(
+                    children: const [
+                      Icon(Icons.check_circle_rounded, color: Colors.green),
+                      SizedBox(width: 8),
+                      Expanded(child: Text('Phone verified successfully.')),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const Spacer(),
+          FilledButton(
+            onPressed: phoneVerified ? onNext : null,
+            child: const Text('Next'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _ReadyStep extends StatelessWidget {
   const _ReadyStep({required this.onFinish});
 
@@ -531,6 +745,7 @@ class _ReadyStep extends StatelessWidget {
                 _ReadyItem(text: 'Profile stored locally'),
                 _ReadyItem(text: 'Private connection prepared'),
                 _ReadyItem(text: 'Clinician ID ready'),
+                _ReadyItem(text: 'Phone OTP verified'),
               ],
             ),
           ),

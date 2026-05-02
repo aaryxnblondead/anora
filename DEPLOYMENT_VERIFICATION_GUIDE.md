@@ -65,18 +65,41 @@ psql "$DATABASE_URL" -c "SELECT 1;"
 cat backend/.env.production.template | grep -E '^[A-Z_]+=' | head -20
 
 # Verify critical vars in your deployment
-env | grep -E 'DATABASE_URL|AWS_REGION|ALLOWED_ORIGINS'
+env | grep -E 'DATABASE_URL|AWS_REGION|AUTH_JWT_SECRET|AUTH_JWT_EXP_SECONDS|OTP_TTL_SECONDS|OTP_MAX_ATTEMPTS|OTP_DEBUG_ECHO|AWS_SMS_TYPE|AWS_SNS_SMS_SENDER_ID|ALLOWED_ORIGINS'
 
 # Expected output:
 # DATABASE_URL=postgresql://...
 # AWS_REGION=us-east-1
+# AUTH_JWT_SECRET=...
+# AUTH_JWT_EXP_SECONDS=86400
+# OTP_TTL_SECONDS=300
+# OTP_MAX_ATTEMPTS=5
+# OTP_DEBUG_ECHO=false
+# AWS_SMS_TYPE=Transactional
+# AWS_SNS_SMS_SENDER_ID=ANORA
 # ALLOWED_ORIGINS=https://d1p1fpleu1yzws.cloudfront.net
 ```
 
 **Hard Failure Variables (no defaults provided):**
 - `DATABASE_URL` - Must point to valid PostgreSQL instance
 - `AWS_REGION` - Required for SNS push notifications
+- `AUTH_JWT_SECRET` - Required for access-token signing in production
 - `AWS_SNS_PLATFORM_APPLICATION_ARN_*` - Required if using push notifications
+
+**App Runner Runtime Role Check (required for OTP SMS):**
+
+```bash
+echo "APP_RUNNER_RUNTIME_ROLE_ARN=$APP_RUNNER_RUNTIME_ROLE_ARN"
+
+aws iam simulate-principal-policy \
+   --policy-source-arn "$APP_RUNNER_RUNTIME_ROLE_ARN" \
+   --action-names sns:Publish \
+   --resource-arns "*" \
+   --query 'EvaluationResults[0].EvalDecision' \
+   --output text
+
+# Expected output: allowed
+```
 
 ---
 
@@ -187,6 +210,22 @@ python init_prod_db.py
 # 2. Verify environment variables
 echo "DATABASE_URL: $DATABASE_URL"
 echo "AWS_REGION: $AWS_REGION"
+echo "AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:+set}"
+echo "AUTH_JWT_EXP_SECONDS: $AUTH_JWT_EXP_SECONDS"
+echo "OTP_TTL_SECONDS: $OTP_TTL_SECONDS"
+echo "OTP_MAX_ATTEMPTS: $OTP_MAX_ATTEMPTS"
+echo "OTP_DEBUG_ECHO: $OTP_DEBUG_ECHO"
+echo "AWS_SMS_TYPE: $AWS_SMS_TYPE"
+echo "AWS_SNS_SMS_SENDER_ID: $AWS_SNS_SMS_SENDER_ID"
+echo "APP_RUNNER_RUNTIME_ROLE_ARN: $APP_RUNNER_RUNTIME_ROLE_ARN"
+
+# Verify runtime role can publish OTP SMS
+aws iam simulate-principal-policy \
+   --policy-source-arn "$APP_RUNNER_RUNTIME_ROLE_ARN" \
+   --action-names sns:Publish \
+   --resource-arns "*" \
+   --query 'EvaluationResults[0].EvalDecision' \
+   --output text
 echo "ALLOWED_ORIGINS: $ALLOWED_ORIGINS"
 
 # 3. Test health endpoint (if backend running locally)
@@ -232,7 +271,8 @@ docker push 027277540377.dkr.ecr.us-east-1.amazonaws.com/anora-backend:latest
 
 # Update App Runner service with new image
 aws apprunner update-service --service-arn <your-service-arn> \
-  --source-configuration ImageRepository={ImageIdentifier=027277540377.dkr.ecr.us-east-1.amazonaws.com/anora-backend:latest}
+   --source-configuration "ImageRepository={ImageIdentifier=027277540377.dkr.ecr.us-east-1.amazonaws.com/anora-backend:latest,ImageRepositoryType=ECR,ImageConfiguration={Port=8000,RuntimeEnvironmentVariables={DATABASE_URL=$DATABASE_URL,AWS_REGION=$AWS_REGION,AUTH_JWT_SECRET=$AUTH_JWT_SECRET,AUTH_JWT_EXP_SECONDS=$AUTH_JWT_EXP_SECONDS,OTP_TTL_SECONDS=$OTP_TTL_SECONDS,OTP_MAX_ATTEMPTS=$OTP_MAX_ATTEMPTS,OTP_DEBUG_ECHO=$OTP_DEBUG_ECHO,AWS_SMS_TYPE=$AWS_SMS_TYPE,AWS_SNS_SMS_SENDER_ID=$AWS_SNS_SMS_SENDER_ID}}}" \
+   --instance-configuration "InstanceRoleArn=$APP_RUNNER_RUNTIME_ROLE_ARN"
 
 # Wait for deployment (~5 min)
 # Verify health
@@ -332,15 +372,27 @@ If deployment fails:
 3. **Verify environment variables**:
    ```bash
    # In App Runner console, check "Environment Variables" section
-   # Ensure DATABASE_URL, AWS_REGION are set
+   # Ensure DATABASE_URL, AWS_REGION, AUTH_JWT_SECRET, AUTH_JWT_EXP_SECONDS,
+   # OTP_TTL_SECONDS, OTP_MAX_ATTEMPTS, OTP_DEBUG_ECHO, AWS_SMS_TYPE,
+   # AWS_SNS_SMS_SENDER_ID are set
    ```
 
-4. **Test database connectivity**:
+4. **Verify runtime role SNS permission**:
+   ```bash
+   aws iam simulate-principal-policy \
+     --policy-source-arn "$APP_RUNNER_RUNTIME_ROLE_ARN" \
+     --action-names sns:Publish \
+     --resource-arns "*" \
+     --query 'EvaluationResults[0].EvalDecision' \
+     --output text
+   ```
+
+5. **Test database connectivity**:
    ```bash
    psql "$DATABASE_URL" -c "SELECT * FROM fl_rounds;"
    ```
 
-5. **Roll back**:
+6. **Roll back**:
    ```bash
    aws apprunner update-service --service-arn <arn> --source-configuration ImageRepository={ImageIdentifier=<previous-version>}
    ```

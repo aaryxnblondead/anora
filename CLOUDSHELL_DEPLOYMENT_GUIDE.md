@@ -19,6 +19,16 @@ export AWS_ACCOUNT_ID="027277540377"
 export AWS_REGION="us-east-1"
 export DATABASE_URL="postgresql://user:password@hostname:5432/anora_prod"
 export APP_RUNNER_SERVICE_NAME="anora-backend"
+export APP_RUNNER_RUNTIME_ROLE_ARN="arn:aws:iam::027277540377:role/anora-apprunner-runtime-role"
+
+# Required auth/OTP runtime vars for backend
+export AUTH_JWT_SECRET="replace-with-long-random-secret"
+export AUTH_JWT_EXP_SECONDS="86400"
+export OTP_TTL_SECONDS="300"
+export OTP_MAX_ATTEMPTS="5"
+export OTP_DEBUG_ECHO="false"
+export AWS_SMS_TYPE="Transactional"
+export AWS_SNS_SMS_SENDER_ID="ANORA"
 ```
 
 **Where to get these values:**
@@ -26,6 +36,21 @@ export APP_RUNNER_SERVICE_NAME="anora-backend"
 - **AWS_REGION**: Top-right dropdown or `us-east-1` (default)
 - **DATABASE_URL**: AWS RDS console → Copy endpoint and credentials
 - **APP_RUNNER_SERVICE_NAME**: AWS App Runner console → Your service name
+- **APP_RUNNER_RUNTIME_ROLE_ARN**: App Runner service → Instance configuration → Instance role ARN
+- **AUTH_JWT_SECRET**: Generate a strong random secret and store in a secure secret manager
+
+Before deploying, verify runtime role permission for OTP SMS:
+
+```bash
+aws iam simulate-principal-policy \
+  --policy-source-arn "$APP_RUNNER_RUNTIME_ROLE_ARN" \
+  --action-names sns:Publish \
+  --resource-arns "*" \
+  --query 'EvaluationResults[0].EvalDecision' \
+  --output text
+
+# Expected output: allowed
+```
 
 ### 3. Clone Repository & Run Deployment Script
 
@@ -38,7 +63,8 @@ chmod +x deploy.sh
 ./deploy.sh \
   --aws-account "$AWS_ACCOUNT_ID" \
   --aws-region "$AWS_REGION" \
-  --db-url "$DATABASE_URL"
+  --db-url "$DATABASE_URL" \
+  --runtime-role-arn "$APP_RUNNER_RUNTIME_ROLE_ARN"
 ```
 
 **If you already have an App Runner service, add this flag:**
@@ -48,6 +74,7 @@ chmod +x deploy.sh
   --aws-account "$AWS_ACCOUNT_ID" \
   --aws-region "$AWS_REGION" \
   --db-url "$DATABASE_URL" \
+  --runtime-role-arn "$APP_RUNNER_RUNTIME_ROLE_ARN" \
   --app-runner-arn "arn:aws:apprunner:us-east-1:027277540377:service/anora-backend/..."
 ```
 
@@ -133,6 +160,14 @@ export AWS_REGION="us-east-1"
 export DATABASE_URL="postgresql://anora_user:SecurePassword123@anora-prod.c9akciq32.us-east-1.rds.amazonaws.com:5432/anora_prod"
 export ALLOWED_ORIGINS="https://d1p1fpleu1yzws.cloudfront.net"
 export APP_RUNNER_SERVICE_NAME="anora-backend"
+export APP_RUNNER_RUNTIME_ROLE_ARN="arn:aws:iam::027277540377:role/anora-apprunner-runtime-role"
+export AUTH_JWT_SECRET="replace-with-long-random-secret"
+export AUTH_JWT_EXP_SECONDS="86400"
+export OTP_TTL_SECONDS="300"
+export OTP_MAX_ATTEMPTS="5"
+export OTP_DEBUG_ECHO="false"
+export AWS_SMS_TYPE="Transactional"
+export AWS_SNS_SMS_SENDER_ID="ANORA"
 EOF
 
 # Load it
@@ -170,7 +205,8 @@ ls -lh deploy.sh
 ./deploy.sh \
   --aws-account "$AWS_ACCOUNT_ID" \
   --aws-region "$AWS_REGION" \
-  --db-url "$DATABASE_URL"
+  --db-url "$DATABASE_URL" \
+  --runtime-role-arn "$APP_RUNNER_RUNTIME_ROLE_ARN"
 ```
 
 **If App Runner exists:**
@@ -192,6 +228,7 @@ APP_RUNNER_ARN="arn:aws:apprunner:us-east-1:027277540377:service/anora-backend/a
   --aws-account "$AWS_ACCOUNT_ID" \
   --aws-region "$AWS_REGION" \
   --db-url "$DATABASE_URL" \
+  --runtime-role-arn "$APP_RUNNER_RUNTIME_ROLE_ARN" \
   --app-runner-arn "$APP_RUNNER_ARN"
 ```
 
@@ -315,7 +352,8 @@ aws apprunner list-services --region "$AWS_REGION" --output table
 # 3. Source: Container registry
 # 4. Use ECR image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/anora-backend:latest
 # 5. Port: 8000
-# 6. Environment variables: DATABASE_URL, ALLOWED_ORIGINS, AWS_REGION, etc.
+# 6. Environment variables: DATABASE_URL, AUTH_JWT_SECRET, AUTH_JWT_EXP_SECONDS, OTP_TTL_SECONDS,
+#    OTP_MAX_ATTEMPTS, OTP_DEBUG_ECHO, AWS_SMS_TYPE, AWS_SNS_SMS_SENDER_ID, AWS_REGION, ALLOWED_ORIGINS, etc.
 # 7. Create
 
 # Then re-run deploy.sh with --app-runner-arn flag
@@ -383,7 +421,8 @@ DATABASE_URL="$DATABASE_URL" python3 init_prod_db.py
 aws apprunner update-service \
   --service-arn "$APP_RUNNER_ARN" \
   --region "$AWS_REGION" \
-  --source-configuration "ImageRepository={ImageIdentifier=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/anora-backend:latest,ImageRepositoryType=ECR,ImageConfiguration={Port=8000,RuntimeEnvironmentVariables={DATABASE_URL=$DATABASE_URL}}}"
+  --source-configuration "ImageRepository={ImageIdentifier=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/anora-backend:latest,ImageRepositoryType=ECR,ImageConfiguration={Port=8000,RuntimeEnvironmentVariables={DATABASE_URL=$DATABASE_URL,AWS_REGION=$AWS_REGION,AUTH_JWT_SECRET=$AUTH_JWT_SECRET,AUTH_JWT_EXP_SECONDS=$AUTH_JWT_EXP_SECONDS,OTP_TTL_SECONDS=$OTP_TTL_SECONDS,OTP_MAX_ATTEMPTS=$OTP_MAX_ATTEMPTS,OTP_DEBUG_ECHO=$OTP_DEBUG_ECHO,AWS_SMS_TYPE=$AWS_SMS_TYPE,AWS_SNS_SMS_SENDER_ID=$AWS_SNS_SMS_SENDER_ID}}}" \
+  --instance-configuration "InstanceRoleArn=$APP_RUNNER_RUNTIME_ROLE_ARN"
 ```
 
 ---

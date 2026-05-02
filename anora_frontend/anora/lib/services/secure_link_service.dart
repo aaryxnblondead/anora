@@ -179,17 +179,28 @@ class SecureLinkService {
       throw ArgumentError('clinicianId is required');
     }
 
-    final existingToken = StorageService.instance.settingsBox.get(_clinicianJwtKey);
-    if (existingToken is String && existingToken.trim().isNotEmpty) {
-      return existingToken.trim();
+    final box = StorageService.instance.settingsBox;
+    final existingToken = box.get('auth_access_token');
+    final role = (box.get('auth_role') as String?)?.trim();
+    final boundClinicianId = (box.get('auth_clinician_id') as String?)?.trim();
+    final expiresRaw = (box.get('auth_expires_at') as String?)?.trim();
+
+    if (existingToken is String &&
+        existingToken.trim().isNotEmpty &&
+        role == 'clinician' &&
+        boundClinicianId == trimmedId &&
+        expiresRaw != null) {
+      final expiresAt = DateTime.tryParse(expiresRaw)?.toUtc();
+      if (expiresAt != null && expiresAt.isAfter(DateTime.now().toUtc())) {
+        await box.put(_clinicianJwtKey, existingToken.trim());
+        return existingToken.trim();
+      }
     }
 
-    // Backend auth token issuance is not available yet in this MVP flow.
-    // Store a local session token so authenticated clinician-only calls remain seamless.
-    final sessionToken = _generateLocalSessionToken(trimmedId);
-    await StorageService.instance.settingsBox.put(_clinicianJwtKey, sessionToken);
-    return sessionToken;
+    throw StateError('Phone OTP authentication required for clinician access.');
   }
+
+  Future<String> getOrCreatePatientDeviceId() => _getOrCreatePatientDeviceId();
 
   Future<void> syncMoodTelemetry({required JournalEntry entry}) async {
     if (!_isClinicianOptInEnabled()) {
@@ -372,23 +383,6 @@ class SecureLinkService {
 
     await StorageService.instance.settingsBox.put(_patientDeviceIdKey, id);
     return id;
-  }
-
-  String _generateLocalSessionToken(String clinicianId) {
-    final random = Random.secure();
-    final randomBytes = List<int>.generate(24, (_) => random.nextInt(256));
-    final timestamp = DateTime.now().toUtc().millisecondsSinceEpoch;
-    final payload = jsonEncode(
-      <String, dynamic>{
-        'sub': clinicianId,
-        'iat': timestamp,
-        'iss': 'anora-local',
-      },
-    );
-    final signatureSeed = base64UrlEncode(randomBytes).replaceAll('=', '');
-    final headerB64 = base64UrlEncode(utf8.encode('{"alg":"none","typ":"JWT"}')).replaceAll('=', '');
-    final payloadB64 = base64UrlEncode(utf8.encode(payload)).replaceAll('=', '');
-    return '$headerB64.$payloadB64.$signatureSeed';
   }
 
   bool _isClinicianOptInEnabled() {

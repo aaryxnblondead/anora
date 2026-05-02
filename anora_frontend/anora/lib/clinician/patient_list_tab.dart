@@ -1,31 +1,11 @@
-import 'package:anora/state/clinician_state.dart';
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../services/clinician_push_service.dart';
+import '../state/clinician_state.dart';
 import '../theme/anora_theme.dart';
-import 'widgets/report_detail_sheet.dart';
-
-// A provider to get a unique list of patients from all records.
-final uniquePatientsProvider = Provider.autoDispose<List<PatientRecord>>((ref) {
-  // Watch the combined list of records and alerts, sorted by date.
-  final records = ref.watch(clinicianReportsProvider.select((s) => s.inboxRecords));
-  final uniquePatientMap = <String, PatientRecord>{};
-
-  // Since inboxRecords is sorted with the most recent first, the first time we see
-  // a patientDeviceId, it's their most recent record.
-  for (final record in records) {
-    final deviceId = record.patientDeviceId;
-    if (deviceId != null && deviceId.isNotEmpty) {
-      if (!uniquePatientMap.containsKey(deviceId)) {
-        uniquePatientMap[deviceId] = record;
-      }
-    }
-  }
-  // Return the list of unique patients, sorted alphabetically by label.
-  final patientList = uniquePatientMap.values.toList();
-  patientList.sort((a, b) => a.patientLabel.compareTo(b.patientLabel));
-  return patientList;
-});
+import 'providers/linked_patients_provider.dart';
 
 class PatientListTab extends ConsumerStatefulWidget {
   const PatientListTab({super.key});
@@ -38,26 +18,25 @@ class _PatientListTabState extends ConsumerState<PatientListTab> {
   @override
   void initState() {
     super.initState();
-    // Fetch latest data when the tab is first initialized.
-    Future.microtask(() {
-      ref.read(clinicianReportsProvider.notifier).syncLatestReports();
-      ref.read(clinicianReportsProvider.notifier).syncLatestMoodUpdates();
-    });
+    Future.microtask(_refreshAll);
+  }
+
+  Future<void> _refreshAll() async {
+    await Future.wait([
+      ref.read(linkedPatientsProvider.notifier).sync(),
+      ref.read(clinicianReportsProvider.notifier).syncLatestReports(),
+      ref.read(clinicianReportsProvider.notifier).syncLatestMoodUpdates(),
+    ]);
   }
 
   @override
   Widget build(BuildContext context) {
-    final patients = ref.watch(uniquePatientsProvider);
-    final isLoading = ref.watch(clinicianReportsProvider.select((s) => s.isLoading));
+    final linkedState = ref.watch(linkedPatientsProvider);
     final records = ref.watch(clinicianReportsProvider.select((s) => s.inboxRecords));
-    final notifier = ref.read(clinicianReportsProvider.notifier);
     final layout = AnoraLayoutSpec.of(context);
 
     return RefreshIndicator(
-      onRefresh: () async {
-        await ref.read(clinicianReportsProvider.notifier).syncLatestReports();
-        await ref.read(clinicianReportsProvider.notifier).syncLatestMoodUpdates();
-      },
+      onRefresh: _refreshAll,
       child: Align(
         alignment: Alignment.topCenter,
         child: ConstrainedBox(
@@ -79,7 +58,7 @@ class _PatientListTabState extends ConsumerState<PatientListTab> {
                   Expanded(
                     child: _PatientMetricTile(
                       label: 'Active Patients',
-                      value: '${patients.length}',
+                      value: '${linkedState.totalLinked}',
                       icon: Icons.groups_2_rounded,
                     ),
                   ),
@@ -94,21 +73,28 @@ class _PatientListTabState extends ConsumerState<PatientListTab> {
                 ],
               ),
               SizedBox(height: layout.sectionGap),
-              if (isLoading)
+              if (linkedState.isLoading)
                 const Padding(
                   padding: EdgeInsets.only(bottom: 12),
                   child: LinearProgressIndicator(minHeight: 3),
                 ),
-              if (patients.isEmpty && !isLoading)
+              if (linkedState.error != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Text(
+                    linkedState.error!,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                  ),
+                ),
+              if (linkedState.patients.isEmpty && !linkedState.isLoading)
                 const _EmptyPatientsState()
               else
-                ...patients.map(
+                ...linkedState.patients.map(
                   (patient) => Padding(
                     padding: EdgeInsets.only(bottom: layout.minorGap),
-                    child: _PatientSummaryCard(
-                      patient: patient,
-                      notifier: notifier,
-                    ),
+                    child: _PatientSummaryCard(patient: patient),
                   ),
                 ),
             ],
@@ -191,16 +177,17 @@ class _EmptyPatientsState extends StatelessWidget {
 }
 
 class _PatientSummaryCard extends StatelessWidget {
-  const _PatientSummaryCard({required this.patient, required this.notifier});
+  const _PatientSummaryCard({required this.patient});
 
-  final PatientRecord patient;
-  final ClinicianReportsNotifier notifier;
+  final LinkedPatientEntry patient;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final topEmotion = patient.topEmotion?.trim();
-    final moodValue = patient.avgMoodScore?.toStringAsFixed(1) ?? '--';
+    final topEmotion = patient.latestMood?.moodLabels.isNotEmpty == true
+        ? patient.latestMood!.moodLabels.last
+        : null;
+    final moodValue = patient.latestMood?.moodScore.toStringAsFixed(1) ?? '--';
 
     return AnoraSectionCard(
       padding: EdgeInsets.zero,
@@ -213,7 +200,7 @@ class _PatientSummaryCard extends StatelessWidget {
               context: context,
               isScrollControlled: true,
               useSafeArea: true,
-              builder: (_) => ReportDetailSheet(record: patient, notifier: notifier),
+              builder: (_) => _LinkedPatientDetailSheet(patient: patient),
             );
           },
           child: Padding(
@@ -247,7 +234,7 @@ class _PatientSummaryCard extends StatelessWidget {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        'ID: ${patient.patientDeviceId ?? "Unknown"}',
+                        'ID: ${patient.patientDeviceId}',
                         style: theme.textTheme.bodySmall,
                       ),
                       const SizedBox(height: 8),
@@ -256,8 +243,8 @@ class _PatientSummaryCard extends StatelessWidget {
                         runSpacing: 6,
                         children: [
                           _PatientInfoPill(label: 'Mood $moodValue'),
-                          _PatientInfoPill(label: topEmotion?.isNotEmpty == true ? topEmotion! : 'No emotion tag'),
-                          _PatientInfoPill(label: _formatUpdated(patient.receivedAt)),
+                          _PatientInfoPill(label: topEmotion?.trim().isNotEmpty == true ? topEmotion! : 'No emotion tag'),
+                          _PatientInfoPill(label: _formatUpdated(patient.latestMood?.lastMoodAt ?? patient.linkedAt)),
                         ],
                       ),
                     ],
@@ -295,6 +282,237 @@ class _PatientInfoPill extends StatelessWidget {
         borderRadius: BorderRadius.circular(999),
       ),
       child: Text(label, style: theme.textTheme.labelMedium),
+    );
+  }
+}
+
+class _LinkedPatientDetailSheet extends StatelessWidget {
+  const _LinkedPatientDetailSheet({required this.patient});
+
+  final LinkedPatientEntry patient;
+
+  @override
+  Widget build(BuildContext context) {
+    final mood = patient.latestMood;
+    final score = mood?.moodScore ?? 0.0;
+    final trendPoints = patient.moodHistory.isNotEmpty
+        ? patient.moodHistory
+        : (mood != null ? <double>[mood.moodScore] : const <double>[]);
+
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.84,
+      maxChildSize: 0.95,
+      minChildSize: 0.56,
+      builder: (context, controller) {
+        return Container(
+          decoration: const BoxDecoration(
+            color: Color(0xFFF7F6F2),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+          ),
+          child: ListView(
+            controller: controller,
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+            children: [
+              Text(patient.patientLabel, style: Theme.of(context).textTheme.headlineMedium),
+              const SizedBox(height: 4),
+              Text('Live mood update', style: Theme.of(context).textTheme.bodySmall),
+              Text(_formatDate(mood?.lastMoodAt ?? patient.linkedAt), style: Theme.of(context).textTheme.bodyMedium),
+              const SizedBox(height: 16),
+              _SectionCard(
+                title: 'Mood Overview',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${(score * 100).round()}%',
+                      style: Theme.of(context).textTheme.headlineLarge?.copyWith(
+                            color: _scoreColor(context, score),
+                          ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      mood?.moodDescriptor ?? 'No mood data yet',
+                      style: Theme.of(context).textTheme.bodyLarge,
+                    ),
+                    const SizedBox(height: 14),
+                    if (trendPoints.isNotEmpty)
+                      SizedBox(
+                        height: 150,
+                        child: _MoodTrendChart(points: trendPoints),
+                      )
+                    else
+                      Text(
+                        'No trend data available yet.',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              _SectionCard(
+                title: 'Risk Flags',
+                child: _RiskFlags(flags: mood?.riskFlags ?? const <String>[]),
+              ),
+              const SizedBox(height: 12),
+              _SectionCard(
+                title: 'Entry Activity',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Trend points: ${trendPoints.length}'),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Top emotion: ${mood?.moodLabels.isNotEmpty == true ? mood!.moodLabels.last : 'Not available'}',
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  String _formatDate(DateTime date) {
+    const months = <String>[
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    return '${months[date.month - 1]} ${date.day}, ${date.year}';
+  }
+
+  Color _scoreColor(BuildContext context, double score) {
+    if (score >= 0.62) return Theme.of(context).colorScheme.primary;
+    if (score >= 0.40) return Theme.of(context).colorScheme.secondary;
+    return Theme.of(context).colorScheme.error;
+  }
+}
+
+class _MoodTrendChart extends StatelessWidget {
+  const _MoodTrendChart({required this.points});
+
+  final List<double> points;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final safePoints = points.map((p) => p.clamp(0.0, 1.0)).toList(growable: false);
+
+    final chartPoints = <FlSpot>[];
+    for (var i = 0; i < safePoints.length; i++) {
+      chartPoints.add(FlSpot(i.toDouble(), safePoints[i]));
+    }
+
+    return LineChart(
+      LineChartData(
+        minY: 0,
+        maxY: 1,
+        minX: 0,
+        maxX: (safePoints.length - 1).toDouble(),
+        gridData: FlGridData(
+          show: true,
+          horizontalInterval: 0.25,
+          drawVerticalLine: false,
+          getDrawingHorizontalLine: (_) => FlLine(
+            color: theme.colorScheme.outline.withValues(alpha: 0.24),
+            strokeWidth: 1,
+          ),
+        ),
+        borderData: FlBorderData(show: false),
+        lineTouchData: const LineTouchData(enabled: false),
+        titlesData: const FlTitlesData(
+          leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        ),
+        lineBarsData: [
+          LineChartBarData(
+            spots: chartPoints,
+            isCurved: true,
+            barWidth: 3,
+            color: theme.colorScheme.primary,
+            dotData: FlDotData(show: safePoints.length <= 2),
+            belowBarData: BarAreaData(
+              show: true,
+              color: theme.colorScheme.primary.withValues(alpha: 0.16),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RiskFlags extends StatelessWidget {
+  const _RiskFlags({required this.flags});
+
+  final List<String> flags;
+
+  @override
+  Widget build(BuildContext context) {
+    if (flags.isEmpty) {
+      return Text(
+        'No risk flags detected in this report period.',
+        style: Theme.of(context).textTheme.bodyMedium,
+      );
+    }
+
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: flags
+          .map(
+            (flag) => Chip(
+              label: Text(flag),
+              avatar: Icon(
+                Icons.warning_amber_rounded,
+                size: 16,
+                color: Theme.of(context).colorScheme.error,
+              ),
+            ),
+          )
+          .toList(growable: false),
+    );
+  }
+}
+
+class _SectionCard extends StatelessWidget {
+  const _SectionCard({required this.title, required this.child});
+
+  final String title;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF1F0EB),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE0DED7)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 10),
+          child,
+        ],
+      ),
     );
   }
 }

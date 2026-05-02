@@ -97,12 +97,15 @@ class ApiEndpointService {
     Map<String, String>? headers,
     Duration timeout = const Duration(seconds: 10),
   }) async {
+    final effectiveHeaders = _withAuthHeaders(headers);
     final candidates = _candidateUris(uri);
     Object? lastError;
     for (var index = 0; index < candidates.length; index++) {
       final candidate = candidates[index];
       try {
-        final response = await _requestWithRetry(() => http.get(candidate, headers: headers).timeout(timeout));
+        final response = await _requestWithRetry(
+          () => http.get(candidate, headers: effectiveHeaders).timeout(timeout),
+        );
         if (response.statusCode == 421 && candidate != candidates.last) {
           _rotateBaseUrl();
           continue;
@@ -127,6 +130,7 @@ class ApiEndpointService {
     Encoding? encoding,
     Duration timeout = const Duration(seconds: 12),
   }) async {
+    final effectiveHeaders = _withAuthHeaders(headers);
     final candidates = _candidateUris(uri);
     Object? lastError;
     for (var index = 0; index < candidates.length; index++) {
@@ -135,7 +139,7 @@ class ApiEndpointService {
         final response = await _requestWithRetry(
           () => http.post(
             candidate,
-            headers: headers,
+            headers: effectiveHeaders,
             body: body,
             encoding: encoding,
           ).timeout(timeout),
@@ -252,6 +256,22 @@ class ApiEndpointService {
       return;
     }
     _currentUrlIndex = (_currentUrlIndex + 1) % urls.length;
+  }
+
+  Map<String, String>? _withAuthHeaders(Map<String, String>? headers) {
+    final tokenRaw = StorageService.instance.settingsBox.get('auth_access_token');
+    final token = tokenRaw is String ? tokenRaw.trim() : '';
+
+    if (token.isEmpty) {
+      return headers;
+    }
+
+    final merged = <String, String>{...?headers};
+    final hasAuthHeader = merged.keys.any((key) => key.toLowerCase() == 'authorization');
+    if (!hasAuthHeader) {
+      merged['Authorization'] = 'Bearer $token';
+    }
+    return merged;
   }
 
   bool _isSupportedScheme(String scheme) {

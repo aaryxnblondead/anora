@@ -580,7 +580,9 @@ class ClinicianReportsNotifier extends StateNotifier<ClinicianReportsState> {
       return;
     }
 
-    final clinicianJwt = (_storage.settingsBox.get('clinician_jwt') as String?)?.trim();
+    final clinicianJwt =
+        (_storage.settingsBox.get('auth_access_token') as String?)?.trim() ??
+            (_storage.settingsBox.get('clinician_jwt') as String?)?.trim();
     if (clinicianJwt == null || clinicianJwt.isEmpty) {
       state = state.copyWith(error: 'Clinician session token is missing. Please sign in again.');
       return;
