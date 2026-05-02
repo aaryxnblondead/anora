@@ -1,4 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
+
+import 'package:http/http.dart' as http;
 
 import '../models/user_role.dart';
 import 'api_endpoint_service.dart';
@@ -30,6 +33,9 @@ class PhoneOtpAuthService {
   PhoneOtpAuthService._();
 
   static final PhoneOtpAuthService instance = PhoneOtpAuthService._();
+
+  static const Duration _otpStartTimeout = Duration(seconds: 75);
+  static const Duration _otpVerifyTimeout = Duration(seconds: 30);
 
   static const _tokenKey = 'auth_access_token';
   static const _roleKey = 'auth_role';
@@ -115,10 +121,12 @@ class PhoneOtpAuthService {
         'patient_device_id': patientDeviceId.trim(),
     };
 
-    final response = await ApiEndpointService.instance.post(
-      ApiEndpointService.instance.buildUri('/auth/otp/start'),
-      headers: const <String, String>{'Content-Type': 'application/json'},
-      body: jsonEncode(payload),
+    final response = await _postWithTimeout(
+      '/auth/otp/start',
+      payload,
+      timeout: _otpStartTimeout,
+      timeoutMessage:
+          'OTP request timed out. Please try again in a moment.',
     );
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -148,10 +156,12 @@ class PhoneOtpAuthService {
       'otp_code': otpCode.trim(),
     };
 
-    final response = await ApiEndpointService.instance.post(
-      ApiEndpointService.instance.buildUri('/auth/otp/verify'),
-      headers: const <String, String>{'Content-Type': 'application/json'},
-      body: jsonEncode(payload),
+    final response = await _postWithTimeout(
+      '/auth/otp/verify',
+      payload,
+      timeout: _otpVerifyTimeout,
+      timeoutMessage:
+          'OTP verification timed out. Please retry.',
     );
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -227,6 +237,24 @@ class PhoneOtpAuthService {
     if (session.patientDeviceId != null && session.patientDeviceId!.isNotEmpty) {
       await box.put(_patientDeviceIdKey, session.patientDeviceId);
       await box.put('patient_device_id', session.patientDeviceId);
+    }
+  }
+
+  Future<http.Response> _postWithTimeout(
+    String path,
+    Map<String, dynamic> payload, {
+    required Duration timeout,
+    required String timeoutMessage,
+  }) async {
+    try {
+      return await ApiEndpointService.instance.post(
+        ApiEndpointService.instance.buildUri(path),
+        headers: const <String, String>{'Content-Type': 'application/json'},
+        body: jsonEncode(payload),
+        timeout: timeout,
+      );
+    } on TimeoutException {
+      throw Exception(timeoutMessage);
     }
   }
 
