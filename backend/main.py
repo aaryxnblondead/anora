@@ -1896,7 +1896,7 @@ def get_fl_client_stats() -> dict[str, Any]:
 
 
 @app.get("/health")
-def health() -> dict[str, str | bool]:
+def health() -> dict[str, str | bool | None]:
     """
     Health check endpoint for monitoring and load balancers.
     
