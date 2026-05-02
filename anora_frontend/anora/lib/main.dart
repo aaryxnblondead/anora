@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'admin/admin_web_portal.dart';
 import 'clinician/clinician_web_portal.dart';
 import 'screens/home_screen.dart';
 import 'screens/insights_screen.dart';
@@ -59,11 +60,32 @@ class AnoraApp extends StatelessWidget {
       title: 'Anora',
       debugShowCheckedModeBanner: false,
       theme: buildAnoraTheme(),
-      home: _isClinicianWebPortalMode()
-          ? const ClinicianWebPortalGate()
-          : const OnboardingGate(),
+      home: _isAdminWebPortalMode()
+          ? const AdminWebPortalGate()
+          : _isClinicianWebPortalMode()
+              ? const ClinicianWebPortalGate()
+              : const OnboardingGate(),
     );
   }
+}
+
+bool _isAdminWebPortalMode() {
+  if (!kIsWeb) return false;
+
+  final uri = Uri.base;
+  final portal = uri.queryParameters['portal']?.toLowerCase();
+  if (portal == 'admin' || portal == 'ops' || portal == 'monitor') {
+    return true;
+  }
+
+  final path = uri.path.toLowerCase();
+  if (path.contains('admin-portal') || path.endsWith('/admin')) {
+    return true;
+  }
+
+  final fragment = uri.fragment.toLowerCase();
+  return fragment.contains('portal=admin') ||
+      fragment.contains('admin-portal');
 }
 
 bool _isClinicianWebPortalMode() {

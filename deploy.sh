@@ -55,6 +55,7 @@ AUTH_JWT_EXP_SECONDS="${AUTH_JWT_EXP_SECONDS:-86400}"
 OTP_TTL_SECONDS="${OTP_TTL_SECONDS:-300}"
 OTP_MAX_ATTEMPTS="${OTP_MAX_ATTEMPTS:-5}"
 OTP_DEBUG_ECHO="${OTP_DEBUG_ECHO:-false}"
+ADMIN_MONITOR_API_KEY="${ADMIN_MONITOR_API_KEY:-}"
 AWS_SMS_TYPE="${AWS_SMS_TYPE:-Transactional}"
 AWS_SNS_SMS_SENDER_ID="${AWS_SNS_SMS_SENDER_ID:-ANORA}"
 APP_RUNNER_RUNTIME_ROLE_ARN="${APP_RUNNER_RUNTIME_ROLE_ARN:-}"
@@ -71,6 +72,7 @@ while [[ $# -gt 0 ]]; do
     --otp-ttl-seconds) OTP_TTL_SECONDS="$2"; shift 2 ;;
     --otp-max-attempts) OTP_MAX_ATTEMPTS="$2"; shift 2 ;;
     --otp-debug-echo) OTP_DEBUG_ECHO="$2"; shift 2 ;;
+    --admin-monitor-api-key) ADMIN_MONITOR_API_KEY="$2"; shift 2 ;;
     --aws-sms-type) AWS_SMS_TYPE="$2"; shift 2 ;;
     --aws-sns-sms-sender-id) AWS_SNS_SMS_SENDER_ID="$2"; shift 2 ;;
     --runtime-role-arn) APP_RUNNER_RUNTIME_ROLE_ARN="$2"; shift 2 ;;
@@ -101,6 +103,7 @@ require_numeric() {
 # Validate required environment variables
 require_non_empty "DATABASE_URL" "Use --db-url or set environment variable."
 require_non_empty "AUTH_JWT_SECRET" "Use --auth-jwt-secret or set AUTH_JWT_SECRET in CloudShell."
+require_non_empty "ADMIN_MONITOR_API_KEY" "Use --admin-monitor-api-key or set ADMIN_MONITOR_API_KEY in CloudShell."
 
 if [[ -z "${AWS_ACCOUNT:-}" ]] || [[ -z "${AWS_REGION:-}" ]]; then
   log_error "AWS account/region not set. Use --aws-account and --aws-region."
@@ -142,6 +145,7 @@ log_info "AUTH_JWT_EXP_SECONDS: $AUTH_JWT_EXP_SECONDS"
 log_info "OTP_TTL_SECONDS: $OTP_TTL_SECONDS"
 log_info "OTP_MAX_ATTEMPTS: $OTP_MAX_ATTEMPTS"
 log_info "OTP_DEBUG_ECHO: $OTP_DEBUG_ECHO"
+log_info "ADMIN_MONITOR_API_KEY: [configured]"
 log_info "AWS_SMS_TYPE: $AWS_SMS_TYPE"
 log_info "AWS_SNS_SMS_SENDER_ID: ${AWS_SNS_SMS_SENDER_ID:-<empty>}"
 
@@ -380,6 +384,7 @@ if [[ "$SKIP_APP_RUNNER" == "false" ]]; then
     OTP_TTL_SECONDS="$OTP_TTL_SECONDS" \
     OTP_MAX_ATTEMPTS="$OTP_MAX_ATTEMPTS" \
     OTP_DEBUG_ECHO="$OTP_DEBUG_ECHO" \
+    ADMIN_MONITOR_API_KEY="$ADMIN_MONITOR_API_KEY" \
     AWS_SMS_TYPE="$AWS_SMS_TYPE" \
     AWS_SNS_SMS_SENDER_ID="$AWS_SNS_SMS_SENDER_ID" \
     python3 - <<'PY'
@@ -408,6 +413,7 @@ runtime_env.update(
         "OTP_TTL_SECONDS": os.getenv("OTP_TTL_SECONDS", ""),
         "OTP_MAX_ATTEMPTS": os.getenv("OTP_MAX_ATTEMPTS", ""),
         "OTP_DEBUG_ECHO": os.getenv("OTP_DEBUG_ECHO", ""),
+        "ADMIN_MONITOR_API_KEY": os.getenv("ADMIN_MONITOR_API_KEY", ""),
         "AWS_SMS_TYPE": os.getenv("AWS_SMS_TYPE", ""),
         "AWS_SNS_SMS_SENDER_ID": os.getenv("AWS_SNS_SMS_SENDER_ID", ""),
     }

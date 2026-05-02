@@ -9,7 +9,12 @@
 **Live Endpoints:**
 - API: https://xydctnf6j6.us-east-1.awsapprunner.com
 - Health: `/health` (active DB connectivity check)
-- FL Dashboard: `/fl/dashboard/overview` (admin monitoring)
+- FL Dashboard: `/fl/dashboard/overview` (admin monitoring, secured)
+- Admin Monitor API: `/admin/monitor/overview` (cross-system operational snapshot)
+
+**Web Admin Portal:**
+- Open the Flutter web app with `?portal=admin`
+- Sign in with `ADMIN_MONITOR_API_KEY` to view live auth, care, and FL metrics for implementation reviews
 
 **For Deployment Details:** See `DEPLOYMENT_VERIFICATION_GUIDE.md` and `RELEASE_BUILD_GUIDE.md`
 

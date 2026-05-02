@@ -53,6 +53,7 @@ DB_CONNECT_RETRIES = int(os.getenv("DB_CONNECT_RETRIES", "6"))
 DB_RETRY_DELAY_SECONDS = float(os.getenv("DB_RETRY_DELAY_SECONDS", "5"))
 DB_READY = False
 DB_INIT_ERROR: str | None = None
+APP_STARTED_AT = datetime.now(timezone.utc)
 
 # CORS primarily impacts browser clients. Native mobile clients are not blocked by CORS.
 # In production, restrict to CloudFront CDN URL to prevent unauthorized access.
@@ -75,6 +76,10 @@ logger = logging.getLogger("anora.backend")
 logging.basicConfig(level=logging.INFO)
 
 SNS_CLIENT: Any | None = None
+ADMIN_MONITOR_API_KEY = os.getenv("ADMIN_MONITOR_API_KEY", "").strip()
+if not ADMIN_MONITOR_API_KEY:
+    logger.warning("admin_monitor_api_key_missing_fallback_clinician_auth_enabled")
+
 PHONE_E164_REGEX = re.compile(r"^\+[1-9]\d{7,14}$")
 AUTH_JWT_ISSUER = "anora-backend"
 AUTH_JWT_EXP_SECONDS = int(os.getenv("AUTH_JWT_EXP_SECONDS", "86400"))
@@ -195,6 +200,29 @@ def _require_patient_context(request: Request, patient_device_id: str) -> dict[s
     requested_patient_device_id = patient_device_id.strip()
     if not token_patient_device_id or token_patient_device_id != requested_patient_device_id:
         raise HTTPException(status_code=403, detail="Patient identity mismatch")
+    return claims
+
+
+def _require_admin_access(request: Request) -> dict[str, Any]:
+    """
+    Authorize requests for admin monitoring and FL control endpoints.
+
+    Preferred mode uses X-Admin-Key with ADMIN_MONITOR_API_KEY.
+    Fallback mode (for backward compatibility) allows authenticated clinicians
+    when an admin API key is not configured.
+    """
+    provided_admin_key = request.headers.get("X-Admin-Key", "").strip()
+    if ADMIN_MONITOR_API_KEY:
+        if not provided_admin_key or not secrets.compare_digest(
+            provided_admin_key,
+            ADMIN_MONITOR_API_KEY,
+        ):
+            raise HTTPException(status_code=403, detail="Invalid admin API key")
+        return {"access": "admin_api_key"}
+
+    claims = _require_auth_context(request)
+    if claims.get("role") != "clinician":
+        raise HTTPException(status_code=403, detail="Clinician role required")
     return claims
 
 
@@ -2116,6 +2144,7 @@ def get_fl_round_status_endpoint(round_id: int) -> dict[str, Any]:
 
 @app.post("/fl/admin/rounds/create", status_code=201)
 def create_fl_round_endpoint(
+    request: Request,
     round_id: int,
     model_version: int,
     min_clients: int = 100,
@@ -2126,6 +2155,8 @@ def create_fl_round_endpoint(
     This initiates a new aggregation round. Clients will submit gradients
     for this round when they perform local training while idle/charging.
     """
+    _require_admin_access(request)
+
     if round_id < 0 or model_version < 0:
         raise HTTPException(status_code=422, detail="Invalid round or model version")
     
@@ -2143,7 +2174,7 @@ def create_fl_round_endpoint(
 
 
 @app.post("/fl/admin/rounds/{round_id}/aggregate", status_code=200)
-def aggregate_round_gradients(round_id: int) -> dict[str, Any]:
+def aggregate_round_gradients(round_id: int, request: Request) -> dict[str, Any]:
     """
     [Admin Endpoint] Aggregate masked gradients for a completed round.
     
@@ -2156,6 +2187,8 @@ def aggregate_round_gradients(round_id: int) -> dict[str, Any]:
     Security: Individual client gradients remain masked and cannot be recovered.
     Server only sees the aggregated signal across all clients.
     """
+    _require_admin_access(request)
+
     if round_id < 0:
         raise HTTPException(status_code=422, detail="Invalid round_id")
     
@@ -2200,7 +2233,7 @@ def get_round_convergence_metrics(round_id: int) -> dict[str, Any]:
 
 
 @app.post("/fl/admin/rounds/{round_id}/complete", status_code=200)
-def complete_round(round_id: int) -> dict[str, Any]:
+def complete_round(round_id: int, request: Request) -> dict[str, Any]:
     """
     [Admin Endpoint] Mark a round as completed.
     
@@ -2212,6 +2245,8 @@ def complete_round(round_id: int) -> dict[str, Any]:
     This prevents further gradient submissions to this round and
     allows starting a new round.
     """
+    _require_admin_access(request)
+
     if round_id < 0:
         raise HTTPException(status_code=422, detail="Invalid round_id")
     
@@ -2231,71 +2266,63 @@ def complete_round(round_id: int) -> dict[str, Any]:
     return result
 
 
-@app.get("/fl/dashboard/overview")
-def fl_dashboard_overview() -> dict[str, Any]:
-    """
-    [Admin Dashboard] Get federated learning system overview.
-    
-    Aggregates all key metrics for monitoring FL health:
-    - Client participation (total, active, contribution rates)
-    - Round status (active, completed)
-    - Model versions and deployment status
-    - Convergence metrics (latest round trends)
-    """
-    with get_connection() as connection:
-        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            # Client stats
-            cursor.execute(
-                """
-                SELECT
-                  COUNT(*) AS total_clients,
-                  COUNT(CASE WHEN last_submission_at > NOW() - INTERVAL '7 days' THEN 1 END) AS active_7d,
-                  COUNT(CASE WHEN last_submission_at > NOW() - INTERVAL '30 days' THEN 1 END) AS active_30d,
-                  AVG(total_contributions) AS avg_contributions,
-                  MAX(total_contributions) AS max_contributions
-                FROM fl_clients;
-                """
-            )
-            client_stats = cursor.fetchone()
+def _collect_fl_dashboard_overview(
+    connection: psycopg2.extensions.connection,
+) -> dict[str, Any]:
+    """Collect federated learning dashboard metrics in one DB pass."""
+    with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+        # Client stats
+        cursor.execute(
+            """
+            SELECT
+                COUNT(*) AS total_clients,
+                COUNT(CASE WHEN last_submission_at > NOW() - INTERVAL '7 days' THEN 1 END) AS active_7d,
+                COUNT(CASE WHEN last_submission_at > NOW() - INTERVAL '30 days' THEN 1 END) AS active_30d,
+                AVG(total_contributions) AS avg_contributions,
+                MAX(total_contributions) AS max_contributions
+            FROM fl_clients;
+            """
+        )
+        client_stats = cursor.fetchone()
 
-            # Round stats
-            cursor.execute(
-                """
-                SELECT
-                  COUNT(*) FILTER (WHERE status = 'active') AS active_rounds,
-                  COUNT(*) FILTER (WHERE status = 'completed') AS completed_rounds,
-                  MAX(round_id) AS latest_round_id
-                FROM fl_rounds;
-                """
-            )
-            round_stats = cursor.fetchone()
+        # Round stats
+        cursor.execute(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE status = 'active') AS active_rounds,
+                COUNT(*) FILTER (WHERE status = 'completed') AS completed_rounds,
+                MAX(round_id) AS latest_round_id
+            FROM fl_rounds;
+            """
+        )
+        round_stats = cursor.fetchone()
 
-            # Model stats
-            cursor.execute(
-                """
-                SELECT
-                  MAX(version) AS latest_version,
-                  COUNT(*) AS total_versions,
-                  SUM(num_clients_aggregated) AS total_clients_contributed
-                FROM fl_model_versions;
-                """
-            )
-            model_stats = cursor.fetchone()
+        # Model stats
+        cursor.execute(
+            """
+            SELECT
+                MAX(version) AS latest_version,
+                COUNT(*) AS total_versions,
+                SUM(num_clients_aggregated) AS total_clients_contributed
+            FROM fl_model_versions;
+            """
+        )
+        model_stats = cursor.fetchone()
 
-            # Latest round metrics
-            round_stats = round_stats or {}
-            client_stats = client_stats or {}
-            model_stats = model_stats or {}
-            latest_round = round_stats.get("latest_round_id") or 0
-            cursor.execute(
-                """
-                SELECT metric_name, metric_value
-                FROM fl_convergence_metrics
-                WHERE round_id = %s;
-                """,
-                (latest_round,),
-            )
-            latest_metrics = cursor.fetchall()
+        # Latest round metrics
+        round_stats = round_stats or {}
+        client_stats = client_stats or {}
+        model_stats = model_stats or {}
+        latest_round = round_stats.get("latest_round_id") or 0
+        cursor.execute(
+            """
+            SELECT metric_name, metric_value
+            FROM fl_convergence_metrics
+            WHERE round_id = %s;
+            """,
+            (latest_round,),
+        )
+        latest_metrics = cursor.fetchall()
 
     return {
         "clients": {
@@ -2323,14 +2350,32 @@ def fl_dashboard_overview() -> dict[str, Any]:
     }
 
 
+@app.get("/fl/dashboard/overview")
+def fl_dashboard_overview(request: Request) -> dict[str, Any]:
+    """
+    [Admin Dashboard] Get federated learning system overview.
+
+    Aggregates all key metrics for monitoring FL health:
+    - Client participation (total, active, contribution rates)
+    - Round status (active, completed)
+    - Model versions and deployment status
+    - Convergence metrics (latest round trends)
+    """
+    _require_admin_access(request)
+    with get_connection() as connection:
+        return _collect_fl_dashboard_overview(connection)
+
+
 @app.get("/fl/dashboard/rounds")
-def fl_dashboard_rounds() -> dict[str, Any]:
+def fl_dashboard_rounds(request: Request) -> dict[str, Any]:
     """
     [Admin Dashboard] Get detailed view of all FL rounds.
     
     Shows status, progress, and metrics for each round.
     Useful for monitoring ongoing aggregation and planning next round.
     """
+    _require_admin_access(request)
+
     with get_connection() as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
@@ -2374,12 +2419,14 @@ def fl_dashboard_rounds() -> dict[str, Any]:
 
 
 @app.get("/fl/dashboard/clients")
-def fl_dashboard_clients(limit: int = 100) -> dict[str, Any]:
+def fl_dashboard_clients(request: Request, limit: int = 100) -> dict[str, Any]:
     """
     [Admin Dashboard] Get top contributing clients.
     
     Useful for identifying power users and checking device diversity.
     """
+    _require_admin_access(request)
+
     with get_connection() as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
@@ -2413,6 +2460,167 @@ def fl_dashboard_clients(limit: int = 100) -> dict[str, Any]:
         ],
         "count": len(clients),
     }
+
+
+def _build_health_snapshot() -> dict[str, Any]:
+    """Build current health state with an active database connectivity check."""
+    response = {
+        "status": "ok",
+        "db_ready": DB_READY,
+        "db_connected": False,
+        "db_error": None,
+    }
+
+    if DB_READY:
+        try:
+            conn = get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT 1;")
+            conn.close()
+            response["db_connected"] = True
+            response["status"] = "ok"
+        except psycopg2.OperationalError as exc:
+            response["db_connected"] = False
+            response["status"] = "degraded"
+            response["db_error"] = f"connection_failed: {str(exc)[:100]}"
+    else:
+        response["status"] = "degraded"
+        response["db_error"] = DB_INIT_ERROR or "database initialization failed"
+
+    return response
+
+
+@app.get("/admin/monitor/overview")
+def admin_monitor_overview(request: Request) -> dict[str, Any]:
+    """
+    Get a single-view operational dashboard for admin monitoring and demos.
+
+    Includes service health, authentication activity, care data activity,
+    federated learning metrics, and recent event feed snapshots.
+    """
+    _require_admin_access(request)
+
+    now = datetime.now(timezone.utc)
+    health_status = _build_health_snapshot()
+    uptime_seconds = max(0, int((now - APP_STARTED_AT).total_seconds()))
+
+    overview: dict[str, Any] = {
+        "service": {
+            "status": health_status["status"],
+            "db_ready": health_status["db_ready"],
+            "db_connected": health_status["db_connected"],
+            "db_error": health_status["db_error"],
+            "started_at": APP_STARTED_AT.isoformat(),
+            "uptime_seconds": uptime_seconds,
+            "deployment_env": os.getenv("DEPLOYMENT_ENV", "unknown"),
+            "app_version": os.getenv("APP_VERSION", "unknown"),
+            "admin_access_mode": "admin_api_key" if ADMIN_MONITOR_API_KEY else "clinician_token_fallback",
+        },
+        "auth": {
+            "users_total": 0,
+            "users_patients": 0,
+            "users_clinicians": 0,
+            "users_active_24h": 0,
+            "otp_requested_1h": 0,
+            "otp_verified_1h": 0,
+            "otp_pending": 0,
+            "otp_expired": 0,
+            "otp_locked_out": 0,
+        },
+        "activity": {
+            "patient_links_total": 0,
+            "reports_total": 0,
+            "reports_24h": 0,
+            "mood_events_24h": 0,
+            "emergency_alerts_24h": 0,
+        },
+        "federated_learning": {},
+        "recent_events": [],
+        "timestamp": now.isoformat(),
+    }
+
+    try:
+        with get_connection() as connection:
+            with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                      (SELECT COUNT(*) FROM app_users) AS users_total,
+                      (SELECT COUNT(*) FROM app_users WHERE role = 'patient') AS users_patients,
+                      (SELECT COUNT(*) FROM app_users WHERE role = 'clinician') AS users_clinicians,
+                      (SELECT COUNT(*) FROM app_users WHERE last_login_at > NOW() - INTERVAL '24 hours') AS users_active_24h,
+                      (SELECT COUNT(*) FROM otp_challenges WHERE created_at > NOW() - INTERVAL '1 hour') AS otp_requested_1h,
+                      (SELECT COUNT(*) FROM otp_challenges WHERE consumed_at IS NOT NULL AND consumed_at > NOW() - INTERVAL '1 hour') AS otp_verified_1h,
+                      (SELECT COUNT(*) FROM otp_challenges WHERE consumed_at IS NULL AND expires_at > NOW()) AS otp_pending,
+                      (SELECT COUNT(*) FROM otp_challenges WHERE consumed_at IS NULL AND expires_at <= NOW()) AS otp_expired,
+                      (SELECT COUNT(*) FROM otp_challenges WHERE consumed_at IS NULL AND attempts_remaining <= 0) AS otp_locked_out,
+                      (SELECT COUNT(*) FROM patient_links) AS patient_links_total,
+                      (SELECT COUNT(*) FROM reports) AS reports_total,
+                      (SELECT COUNT(*) FROM reports WHERE created_at > NOW() - INTERVAL '24 hours') AS reports_24h,
+                      (SELECT COUNT(*) FROM mood_events WHERE created_at > NOW() - INTERVAL '24 hours') AS mood_events_24h,
+                      (SELECT COUNT(*) FROM emergency_alerts WHERE created_at > NOW() - INTERVAL '24 hours') AS emergency_alerts_24h;
+                    """
+                )
+                summary = cursor.fetchone() or {}
+
+                cursor.execute(
+                    """
+                    SELECT event_type, subject, event_time
+                    FROM (
+                        SELECT 'report_uploaded' AS event_type, clinician_id AS subject, created_at AS event_time FROM reports
+                        UNION ALL
+                        SELECT 'mood_event_recorded' AS event_type, patient_device_id AS subject, created_at AS event_time FROM mood_events
+                        UNION ALL
+                        SELECT 'emergency_alert_created' AS event_type, clinician_id AS subject, created_at AS event_time FROM emergency_alerts
+                        UNION ALL
+                        SELECT 'otp_requested' AS event_type, phone_number AS subject, created_at AS event_time FROM otp_challenges
+                        UNION ALL
+                        SELECT 'otp_verified' AS event_type, phone_number AS subject, consumed_at AS event_time
+                        FROM otp_challenges
+                        WHERE consumed_at IS NOT NULL
+                    ) events
+                    WHERE event_time IS NOT NULL
+                    ORDER BY event_time DESC
+                    LIMIT 12;
+                    """
+                )
+                recent_events = cursor.fetchall() or []
+
+            overview["federated_learning"] = _collect_fl_dashboard_overview(connection)
+
+            overview["auth"] = {
+                "users_total": summary.get("users_total") or 0,
+                "users_patients": summary.get("users_patients") or 0,
+                "users_clinicians": summary.get("users_clinicians") or 0,
+                "users_active_24h": summary.get("users_active_24h") or 0,
+                "otp_requested_1h": summary.get("otp_requested_1h") or 0,
+                "otp_verified_1h": summary.get("otp_verified_1h") or 0,
+                "otp_pending": summary.get("otp_pending") or 0,
+                "otp_expired": summary.get("otp_expired") or 0,
+                "otp_locked_out": summary.get("otp_locked_out") or 0,
+            }
+
+            overview["activity"] = {
+                "patient_links_total": summary.get("patient_links_total") or 0,
+                "reports_total": summary.get("reports_total") or 0,
+                "reports_24h": summary.get("reports_24h") or 0,
+                "mood_events_24h": summary.get("mood_events_24h") or 0,
+                "emergency_alerts_24h": summary.get("emergency_alerts_24h") or 0,
+            }
+
+            overview["recent_events"] = [
+                {
+                    "event_type": row.get("event_type"),
+                    "subject": row.get("subject"),
+                    "event_time": row["event_time"].isoformat() if row.get("event_time") else None,
+                }
+                for row in recent_events
+            ]
+    except psycopg2.Error as exc:
+        logger.exception("admin_monitor_overview_query_failed")
+        overview["data_source_error"] = str(exc).splitlines()[0][:180]
+
+    return overview
 
 
 @app.get("/fl/clients/stats")
@@ -2456,28 +2664,4 @@ def health() -> dict[str, Any]:
       - db_connected: True if current connectivity test succeeds
       - db_error: Reason for degraded state (if applicable)
     """
-    response = {
-        "status": "ok",
-        "db_ready": DB_READY,
-        "db_connected": False,
-        "db_error": None,
-    }
-    
-    # Test current database connectivity
-    if DB_READY:
-        try:
-            conn = get_connection()
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT 1;")
-            conn.close()
-            response["db_connected"] = True
-            response["status"] = "ok"
-        except psycopg2.OperationalError as e:
-            response["db_connected"] = False
-            response["status"] = "degraded"
-            response["db_error"] = f"connection_failed: {str(e)[:100]}"
-    else:
-        response["status"] = "degraded"
-        response["db_error"] = DB_INIT_ERROR or "database initialization failed"
-    
-    return response
+    return _build_health_snapshot()
