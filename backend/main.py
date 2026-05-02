@@ -1924,7 +1924,7 @@ def get_emergency_alerts(
 def get_report(report_id: str, request: Request) -> dict[str, object]:
     """Returns a clinician report after validating clinician bearer token access."""
     claims = _require_auth_context(request)
-    if claims.get("role") != "clinician":
+    if not DEMO_AUTH_DISABLED and claims.get("role") != "clinician":
         raise HTTPException(status_code=403, detail="Clinician role required")
 
     try:
@@ -1958,10 +1958,11 @@ def get_report(report_id: str, request: Request) -> dict[str, object]:
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found")
 
-    token_clinician_id = str(claims.get("clinician_id") or "").strip()
     row_clinician_id = str(row.get("clinician_id") or "").strip()
-    if not token_clinician_id or token_clinician_id != row_clinician_id:
-        raise HTTPException(status_code=403, detail="Clinician identity mismatch")
+    if not DEMO_AUTH_DISABLED:
+        token_clinician_id = str(claims.get("clinician_id") or "").strip()
+        if not token_clinician_id or token_clinician_id != row_clinician_id:
+            raise HTTPException(status_code=403, detail="Clinician identity mismatch")
 
     created_at = row["created_at"]
     if isinstance(created_at, datetime):
